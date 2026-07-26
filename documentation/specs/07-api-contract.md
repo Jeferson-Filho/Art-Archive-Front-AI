@@ -1,104 +1,104 @@
-# Especificação de Interface — API Contract — Art Archive AI
+# Interface Specification — API Contract — Art Archive AI
 
-**Versão:** 1.0
-**Data:** 2026-07-03
-**Status:** Em revisão
-**Documentos base:** [01 — Visão e Escopo](./01-visao-escopo.md), [02 — Requisitos](./02-requisitos.md), [04 — Arquitetura do Sistema](./04-arquitetura.md), [05 — Banco de Dados](./05-banco-de-dados.md), [06 — Fluxo de Persistência](./06-fluxo-persistencia.md)
+**Version:** 1.0
+**Date:** 2026-07-03
+**Status:** In Review
+**Base Documents:** [01 — Vision and Scope](./01-vision-scope.md), [02 — Requirements](./02-requirements.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md), [06 — Persistence Flow](./06-persistence-flow.md)
 
 ---
 
-## 1. Convenções Gerais
+## 1. General Conventions
 
-| Aspecto                    | Definição                                                                                                                                                                                   |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Base URL**               | Definida por `NEXT_PUBLIC_API_URL` no front-end (doc 04, §3) — aponta para o serviço único de backend                                                                                       |
-| **Formato**                | `application/json` em todas as requisições e respostas, exceto onde indicado                                                                                                                |
-| **Autenticação**           | Cookie de sessão `httpOnly` (`SESSION_COOKIE_NAME`, já usado por `src/middleware.ts`), emitido pelo endpoint de login. Endpoints que exigem autenticação retornam `401` sem o cookie válido |
-| **CORS**                   | Habilitado para a origem do front-end, herdado do comportamento atual do proxy Flask (`flask-cors`)                                                                                         |
-| **Formato de erro padrão** | Todo erro retorna o corpo abaixo, com o `code` específico documentado por endpoint                                                                                                          |
+| Aspect                    | Definition                                                                                                                                                                                      |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Base URL**              | Defined by `NEXT_PUBLIC_API_URL` in the front-end (doc 04, §3) — points to the single backend service                                                                                           |
+| **Format**                | `application/json` in all requests and responses, except where indicated                                                                                                                        |
+| **Authentication**        | `httpOnly` session cookie (`SESSION_COOKIE_NAME`, already used by `src/middleware.ts`), issued by the login endpoint. Endpoints that require authentication return `401` without a valid cookie |
+| **CORS**                  | Enabled for the front-end origin, inherited from the current behavior of the Flask proxy (`flask-cors`)                                                                                         |
+| **Standard error format** | Every error returns the body below, with the specific `code` documented per endpoint                                                                                                            |
 
 ```json
 {
   "error": {
     "code": "STRING_CODE",
-    "message": "Descrição legível do erro"
+    "message": "Human-readable error description"
   }
 }
 ```
 
 ---
 
-## 2. Alinhamento de Nomenclatura com Documentos Anteriores
+## 2. Naming Alignment with Previous Documents
 
-Os docs 04 (§7) e 06 (§2) usaram, respectivamente, `{objectId}` e `{artwork_id}` como placeholders para o identificador da obra nos diagramas de sequência e fluxo. Este documento formaliza `{artwork_id}` como o nome definitivo do parâmetro de rota, por ser o nome já usado nas colunas do doc 05. Os diagramas anteriores devem ser lidos com essa equivalência.
+Docs 04 (§7) and 06 (§2) used, respectively, `{objectId}` and `{artwork_id}` as placeholders for the artwork identifier in the sequence and flow diagrams. This document formalizes `{artwork_id}` as the definitive name of the route parameter, since it is the name already used for the columns in doc 05. The previous diagrams should be read with this equivalence in mind.
 
 ---
 
-## 3. Endpoints — Harvard Proxy (Herdado do MVP)
+## 3. Endpoints — Harvard Proxy (Inherited from the MVP)
 
 ### `GET /proxy/{path}`
 
-Repassa a requisição à Harvard Art Museums API, preservando o contrato hoje consumido pelo front-end (`proxy/object/{id}`, `proxy/object/{id}/people`, `proxy/person/`, etc. — ver doc 04, §4). Não introduz mudanças nesta expansão; documentado aqui apenas para manter o contrato de API completo em um único lugar.
+Forwards the request to the Harvard Art Museums API, preserving the contract currently consumed by the front-end (`proxy/object/{id}`, `proxy/object/{id}/people`, `proxy/person/`, etc. — see doc 04, §4). It introduces no changes in this expansion; documented here only to keep the complete API contract in a single place.
 
-- **Autenticação:** não requer
-- **Query params:** repassados integralmente à Harvard API, com a chave de API anexada pelo backend (nunca pelo front-end — RNF-005)
-- **Resposta:** repassa o corpo JSON da Harvard API, com os campos `info.next` e `info.prev` removidos (comportamento herdado de `proxy/proxy.py`)
+- **Authentication:** not required
+- **Query params:** forwarded in full to the Harvard API, with the API key attached by the backend (never by the front-end — RNF-005)
+- **Response:** forwards the Harvard API's JSON body, with the `info.next` and `info.prev` fields removed (behavior inherited from `proxy/proxy.py`)
 
-| Status                  | Quando ocorre                                        |
-| ----------------------- | ---------------------------------------------------- |
-| 200                     | Requisição repassada com sucesso                     |
-| 502 `HARVARD_API_ERROR` | A Harvard API retornou erro ou uma resposta não-JSON |
+| Status                  | When it occurs                                           |
+| ----------------------- | -------------------------------------------------------- |
+| 200                     | Request forwarded successfully                           |
+| 502 `HARVARD_API_ERROR` | The Harvard API returned an error or a non-JSON response |
 
 ---
 
-## 4. Endpoints — Insight Card (Persistência sob Demanda)
+## 4. Endpoints — Insight Card (Persistence on Demand)
 
 ### `GET /artworks/{artwork_id}/insight-card`
 
-Implementa a lógica de verificação e geração especificada no doc 06. É uma **requisição síncrona única** — o front-end exibe o estado de carregamento (RF-005) imediatamente ao disparar a requisição, no lado cliente, e aguarda a resposta (até 60s, RNF-002). Não há um segundo endpoint de polling nem WebSocket: a resposta final do próprio `GET` já contém o conteúdo, seja ele vindo do cache ou recém-gerado.
+Implements the verification and generation logic specified in doc 06. It is a **single synchronous request** — the front-end displays the loading state (RF-005) immediately upon firing the request, on the client side, and waits for the response (up to 60s, RNF-002). There is no second polling endpoint or WebSocket: the final response of the `GET` itself already contains the content, whether it comes from the cache or was just generated.
 
-- **Autenticação:** não requer (RF-001 é acessível a qualquer visitante)
-- **Path params:** `artwork_id` (integer) — ID da obra na Harvard Art Museums API
+- **Authentication:** not required (RF-001 is accessible to any visitor)
+- **Path params:** `artwork_id` (integer) — the artwork's ID in the Harvard Art Museums API
 
-**Resposta de sucesso — 200 OK** (conteúdo em cache ou recém-gerado; ver Seção 8 sobre o caso de falha de persistência)
+**Success response — 200 OK** (cached or newly generated content; see Section 8 for the persistence failure case)
 
 ```json
 {
   "artwork_id": 123456,
-  "historical_context": "string — contextualização histórica",
-  "comparative_analysis": "string — análise comparativa",
-  "alt_text": "string — texto alternativo da imagem",
+  "historical_context": "string — historical contextualization",
+  "comparative_analysis": "string — comparative analysis",
+  "alt_text": "string — image alternative text",
   "prompt_version": "v1",
   "generated_at": "2026-07-03T14:32:00Z"
 }
 ```
 
-> **Nota (RF-017, cenário 2):** se a geração for bem-sucedida mas a persistência no banco falhar, este endpoint ainda retorna **200** com o conteúdo gerado — a falha de persistência é registrada em log no backend e nunca exposta ao cliente (doc 06, §2, nó "Erro de banco de dados").
+> **Note (RF-017, scenario 2):** if generation succeeds but persistence to the database fails, this endpoint still returns **200** with the generated content — the persistence failure is logged on the backend and never exposed to the client (doc 06, §2, node "Database error").
 
-**Respostas de erro**
+**Error responses**
 
-| Status | Código               | Quando ocorre                                                                                       | Referência                                          |
-| ------ | -------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
-| 404    | `ARTWORK_NOT_FOUND`  | O `artwork_id` não existe na Harvard Art Museums API (verificado antes de acionar o Pipeline de IA) | Caso de borda não coberto pelo doc 06 — ver Seção 8 |
-| 502    | `GENERATION_FAILED`  | O LLM respondeu com erro ou com uma resposta incompleta/malformada                                  | RF-019                                              |
-| 504    | `GENERATION_TIMEOUT` | O LLM não respondeu dentro dos 60 segundos definidos pela RNF-002                                   | RF-019, RNF-002                                     |
+| Status | Code                 | When it occurs                                                                                              | Reference                                       |
+| ------ | -------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| 404    | `ARTWORK_NOT_FOUND`  | The `artwork_id` does not exist in the Harvard Art Museums API (verified before triggering the AI Pipeline) | Edge case not covered by doc 06 — see Section 8 |
+| 502    | `GENERATION_FAILED`  | The LLM responded with an error or with an incomplete/malformed response                                    | RF-019                                          |
+| 504    | `GENERATION_TIMEOUT` | The LLM did not respond within the 60 seconds defined by RNF-002                                            | RF-019, RNF-002                                 |
 
 ---
 
-## 5. Endpoints — Autenticação
+## 5. Endpoints — Authentication
 
-Implementam do zero, sobre o PostgreSQL (doc 05), as funcionalidades de autenticação equivalentes às oferecidas pelo MVP original — login, logout, recuperação de senha e persistência de sessão (RF-014). Nenhum dado do Firebase Auth é migrado: usuários que utilizavam o Firebase precisam criar uma nova conta via `POST /auth/register`.
+These implement, from scratch, on top of PostgreSQL (doc 05), the authentication features equivalent to those offered by the original MVP — login, logout, password recovery, and session persistence (RF-014). No Firebase Auth data is migrated: users who used Firebase need to create a new account via `POST /auth/register`.
 
 ### `POST /auth/register`
 
-- **Autenticação:** não requer
+- **Authentication:** not required
 
 ```json
 // Request
 {
-  "email": "usuario@exemplo.com",
-  "password": "senha-em-texto-puro",
-  "name": "Nome do Usuário"
+  "email": "user@example.com",
+  "password": "plain-text-password",
+  "name": "User Name"
 }
 ```
 
@@ -106,59 +106,59 @@ Implementam do zero, sobre o PostgreSQL (doc 05), as funcionalidades de autentic
 // Response — 201 Created
 {
   "id": "uuid",
-  "email": "usuario@exemplo.com",
-  "name": "Nome do Usuário"
+  "email": "user@example.com",
+  "name": "User Name"
 }
 ```
 
-| Status | Código                 | Quando ocorre                                    |
-| ------ | ---------------------- | ------------------------------------------------ |
-| 409    | `EMAIL_ALREADY_EXISTS` | Já existe um usuário com este e-mail             |
-| 400    | `VALIDATION_ERROR`     | Campos ausentes ou senha fora da política mínima |
+| Status | Code                   | When it occurs                                        |
+| ------ | ---------------------- | ----------------------------------------------------- |
+| 409    | `EMAIL_ALREADY_EXISTS` | A user with this email already exists                 |
+| 400    | `VALIDATION_ERROR`     | Missing fields or password outside the minimum policy |
 
 ---
 
 ### `POST /auth/login`
 
-Aceita login por e-mail/senha **ou** por Google OAuth, preservando as duas opções oferecidas no MVP original.
+Accepts login via email/password **or** via Google OAuth, preserving the two options offered by the original MVP.
 
 ```json
-// Request — opção 1: e-mail e senha
-{ "email": "usuario@exemplo.com", "password": "senha-em-texto-puro" }
+// Request — option 1: email and password
+{ "email": "user@example.com", "password": "plain-text-password" }
 ```
 
 ```json
-// Request — opção 2: Google OAuth
-{ "google_token": "token-emitido-pelo-google-oauth" }
+// Request — option 2: Google OAuth
+{ "google_token": "token-issued-by-google-oauth" }
 ```
 
 ```json
 // Response — 200 OK
 {
-  "user": { "id": "uuid", "email": "usuario@exemplo.com", "name": "Nome do Usuário" },
+  "user": { "id": "uuid", "email": "user@example.com", "name": "User Name" },
   "expires_at": "2026-07-04T14:32:00Z"
 }
 ```
 
-A resposta também define o cookie de sessão `httpOnly` (`Set-Cookie: session=<token>; HttpOnly; Secure; SameSite=Lax`), consumido por `src/middleware.ts`. O corpo da resposta não repete o token — ele só existe no cookie.
+The response also sets the `httpOnly` session cookie (`Set-Cookie: session=<token>; HttpOnly; Secure; SameSite=Lax`), consumed by `src/middleware.ts`. The response body does not repeat the token — it only exists in the cookie.
 
-| Status | Código                | Quando ocorre                                                          |
-| ------ | --------------------- | ---------------------------------------------------------------------- |
-| 401    | `INVALID_CREDENTIALS` | E-mail/senha incorretos ou token do Google inválido                    |
-| 400    | `VALIDATION_ERROR`    | Corpo da requisição não contém nem par e-mail/senha nem `google_token` |
+| Status | Code                  | When it occurs                                                            |
+| ------ | --------------------- | ------------------------------------------------------------------------- |
+| 401    | `INVALID_CREDENTIALS` | Incorrect email/password or invalid Google token                          |
+| 400    | `VALIDATION_ERROR`    | Request body contains neither an email/password pair nor a `google_token` |
 
 ---
 
 ### `POST /auth/logout`
 
-- **Autenticação:** requer sessão válida (cookie)
-- **Request:** sem corpo — a sessão é identificada pelo cookie
-- **Efeito:** marca `sessions.revoked_at = now()` para a sessão atual (doc 05, §5.2), replicando a capacidade de `revoke_refresh_tokens` do Firebase Admin SDK usada hoje
+- **Authentication:** requires a valid session (cookie)
+- **Request:** no body — the session is identified by the cookie
+- **Effect:** sets `sessions.revoked_at = now()` for the current session (doc 05, §5.2), replicating the capability of `revoke_refresh_tokens` from the Firebase Admin SDK used today
 
-| Status             | Quando ocorre                                |
+| Status             | When it occurs                               |
 | ------------------ | -------------------------------------------- |
-| 204 No Content     | Logout realizado com sucesso                 |
-| 401 `UNAUTHORIZED` | Nenhuma sessão válida associada à requisição |
+| 204 No Content     | Logout completed successfully                |
+| 401 `UNAUTHORIZED` | No valid session associated with the request |
 
 ---
 
@@ -166,15 +166,15 @@ A resposta também define o cookie de sessão `httpOnly` (`Set-Cookie: session=<
 
 ```json
 // Request
-{ "email": "usuario@exemplo.com" }
+{ "email": "user@example.com" }
 ```
 
 ```json
-// Response — 200 OK (sempre, independentemente de o e-mail existir)
-{ "message": "Se o e-mail informado existir, um link de redefinição foi enviado." }
+// Response — 200 OK (always, regardless of whether the email exists)
+{ "message": "If the provided email exists, a reset link has been sent." }
 ```
 
-A resposta é sempre 200 mesmo se o e-mail não existir, para não expor quais e-mails estão cadastrados (boa prática de segurança, alinhada ao espírito da RNF-005).
+The response is always 200 even if the email does not exist, so as not to expose which emails are registered (a security best practice, aligned with the spirit of RNF-005).
 
 ---
 
@@ -182,48 +182,48 @@ A resposta é sempre 200 mesmo se o e-mail não existir, para não expor quais e
 
 ```json
 // Request
-{ "token": "token-recebido-por-email", "new_password": "nova-senha" }
+{ "token": "token-received-by-email", "new_password": "new-password" }
 ```
 
 ```json
 // Response — 200 OK
-{ "message": "Senha alterada com sucesso." }
+{ "message": "Password changed successfully." }
 ```
 
-| Status | Código                     | Quando ocorre                           |
-| ------ | -------------------------- | --------------------------------------- |
-| 400    | `INVALID_OR_EXPIRED_TOKEN` | Token inexistente, já usado ou expirado |
+| Status | Code                       | When it occurs                              |
+| ------ | -------------------------- | ------------------------------------------- |
+| 400    | `INVALID_OR_EXPIRED_TOKEN` | Nonexistent, already-used, or expired token |
 
-> **Pendência:** este fluxo depende de um mecanismo de armazenamento de token de redefinição com expiração, que **não existe no doc 05 atual**. Ver Seção 8.
+> **Pending issue:** this flow depends on a reset-token storage mechanism with expiration, which **does not exist in the current doc 05**. See Section 8.
 
 ---
 
 ### `GET /auth/session`
 
-- **Autenticação:** requer sessão válida (cookie)
-- Usado por `useUserSession` (front-end) para validar a sessão atual
+- **Authentication:** requires a valid session (cookie)
+- Used by `useUserSession` (front-end) to validate the current session
 
 ```json
 // Response — 200 OK
 {
-  "user": { "id": "uuid", "email": "usuario@exemplo.com", "name": "Nome do Usuário" },
+  "user": { "id": "uuid", "email": "user@example.com", "name": "User Name" },
   "expires_at": "2026-07-04T14:32:00Z"
 }
 ```
 
-| Status | Código         | Quando ocorre                        |
+| Status | Code           | When it occurs                       |
 | ------ | -------------- | ------------------------------------ |
-| 401    | `UNAUTHORIZED` | Sessão ausente, expirada ou revogada |
+| 401    | `UNAUTHORIZED` | Session missing, expired, or revoked |
 
 ---
 
-## 6. Endpoints — Administração
+## 6. Endpoints — Administration
 
-Suportam o painel administrativo descrito no doc 04 (§4, módulo Admin) e no doc 99 (Bloco 7). **Todos exigem sessão de usuário com privilégio administrativo** — ver pendência na Seção 8.
+Support the administrative panel described in doc 04 (§4, Admin module) and in doc 99 (Block 7). **All of them require a user session with administrative privilege** — see pending issue in Section 8.
 
 ### `GET /admin/artworks`
 
-Lista as obras já processadas pelo pipeline de IA (isto é, com uma linha em `artwork_ai_content` — não existe estado "pendente" a listar, conforme Decisão 7 do doc 05).
+Lists artworks already processed by the AI pipeline (that is, with a row in `artwork_ai_content` — there is no "pending" state to list, per Decision 7 of doc 05).
 
 - **Query params:** `page` (default 1), `page_size` (default 20)
 
@@ -246,25 +246,25 @@ Lista as obras já processadas pelo pipeline de IA (isto é, com uma linha em `a
 
 ### `GET /admin/artworks/{artwork_id}`
 
-Retorna o conteúdo completo gerado para uma obra (mesmo formato do endpoint público da Seção 4).
+Returns the complete content generated for an artwork (same format as the public endpoint in Section 4).
 
-| Status | Código                      | Quando ocorre                                 |
-| ------ | --------------------------- | --------------------------------------------- |
-| 404    | `ARTWORK_CONTENT_NOT_FOUND` | A obra ainda não foi processada pelo pipeline |
+| Status | Code                        | When it occurs                                         |
+| ------ | --------------------------- | ------------------------------------------------------ |
+| 404    | `ARTWORK_CONTENT_NOT_FOUND` | The artwork has not yet been processed by the pipeline |
 
-### `POST /admin/artworks/{artwork_id}/regenerate` _(opcional — baixa prioridade, doc 99 Fase 9)_
+### `POST /admin/artworks/{artwork_id}/regenerate` _(optional — low priority, doc 99 Phase 9)_
 
-Força uma nova geração para uma obra já processada, sobrescrevendo o conteúdo existente. Reaproveita a lógica do doc 06, ignorando a etapa de verificação inicial.
+Forces a new generation for an artwork already processed, overwriting the existing content. Reuses the logic from doc 06, skipping the initial verification step.
 
 ```json
-// Response — 200 OK — mesmo formato do endpoint de insight-card
+// Response — 200 OK — same format as the insight-card endpoint
 ```
 
 ---
 
-## 7. Catálogo de Erros
+## 7. Error Catalog
 
-| Código                      | Status HTTP | Endpoints onde aparece                                                                    |
+| Code                        | HTTP Status | Endpoints where it appears                                                                |
 | --------------------------- | ----------- | ----------------------------------------------------------------------------------------- |
 | `HARVARD_API_ERROR`         | 502         | `GET /proxy/{path}`                                                                       |
 | `ARTWORK_NOT_FOUND`         | 404         | `GET /artworks/{artwork_id}/insight-card`                                                 |
@@ -273,36 +273,36 @@ Força uma nova geração para uma obra já processada, sobrescrevendo o conteú
 | `EMAIL_ALREADY_EXISTS`      | 409         | `POST /auth/register`                                                                     |
 | `VALIDATION_ERROR`          | 400         | `POST /auth/register`, `POST /auth/login`                                                 |
 | `INVALID_CREDENTIALS`       | 401         | `POST /auth/login`                                                                        |
-| `UNAUTHORIZED`              | 401         | `POST /auth/logout`, `GET /auth/session`, endpoints `/admin/*`                            |
+| `UNAUTHORIZED`              | 401         | `POST /auth/logout`, `GET /auth/session`, `/admin/*` endpoints                            |
 | `INVALID_OR_EXPIRED_TOKEN`  | 400         | `POST /auth/password-reset/confirm`                                                       |
 | `ARTWORK_CONTENT_NOT_FOUND` | 404         | `GET /admin/artworks/{artwork_id}`                                                        |
-| `FORBIDDEN`                 | 403         | Endpoints `/admin/*` (sessão válida, mas sem privilégio administrativo)                   |
+| `FORBIDDEN`                 | 403         | `/admin/*` endpoints (valid session, but without administrative privilege)                |
 
 ---
 
-## 8. Pendências Identificadas
+## 8. Identified Pending Issues
 
-A elaboração deste contrato revelou três lacunas não cobertas pelos documentos anteriores:
+The drafting of this contract revealed three gaps not covered by the previous documents:
 
-1. **Privilégio administrativo inexistente no schema:** o doc 05 não define nenhum campo em `users` para distinguir um administrador de um visitante comum, mas os endpoints `/admin/*` precisam dessa distinção (erro `FORBIDDEN`). Solução proposta: adicionar `is_admin BOOLEAN NOT NULL DEFAULT false` à tabela `users`.
-2. **Armazenamento do token de redefinição de senha inexistente:** `POST /auth/password-reset/confirm` depende de um token com expiração que não tem tabela correspondente no doc 05. Solução proposta: adicionar uma tabela `password_reset_tokens` (`id`, `user_id` FK, `token_hash`, `expires_at`, `used_at`).
-3. **Obra inexistente na Harvard API:** o fluxo do doc 06 não trata explicitamente o caso de um `artwork_id` que não existe na Harvard Art Museums API — este documento adiciona esse caso como `404 ARTWORK_NOT_FOUND`, verificado antes de acionar o Pipeline de IA.
+1. **Missing administrative privilege in the schema:** doc 05 does not define any field in `users` to distinguish an administrator from a regular visitor, but the `/admin/*` endpoints need this distinction (`FORBIDDEN` error). Proposed solution: add `is_admin BOOLEAN NOT NULL DEFAULT false` to the `users` table.
+2. **Missing password reset token storage:** `POST /auth/password-reset/confirm` depends on a token with expiration that has no corresponding table in doc 05. Proposed solution: add a `password_reset_tokens` table (`id`, `user_id` FK, `token_hash`, `expires_at`, `used_at`).
+3. **Artwork nonexistent in the Harvard API:** the flow in doc 06 does not explicitly handle the case of an `artwork_id` that does not exist in the Harvard Art Museums API — this document adds this case as `404 ARTWORK_NOT_FOUND`, verified before triggering the AI Pipeline.
 
-Nenhuma dessas lacunas foi corrigida nos documentos 05 ou 06 nesta tarefa — ambos precisariam de um pequeno adendo. Recomendo revisar essas três pendências antes de avançar para a implementação (doc 99, Fase 2 e Fase 8).
+None of these gaps were fixed in documents 05 or 06 as part of this task — both would need a small addendum. I recommend reviewing these three pending issues before moving forward with implementation (doc 99, Phase 2 and Phase 8).
 
 ---
 
-## 9. Rastreabilidade
+## 9. Traceability
 
-| Endpoint                                        | Requisitos Relacionados                                                   | Casos de Uso Relacionados |
-| ----------------------------------------------- | ------------------------------------------------------------------------- | ------------------------- |
-| `GET /proxy/{path}`                             | — (herdado do MVP)                                                        | —                         |
-| `GET /artworks/{artwork_id}/insight-card`       | RF-001, RF-002, RF-003, RF-007, RF-009, RF-016 a RF-019, RNF-001, RNF-002 | UC-01, UC-02, UC-03       |
-| `POST /auth/register`                           | RF-014 (paridade funcional)                                               | —                         |
-| `POST /auth/login`                              | RF-013, RF-014                                                            | UC-06                     |
-| `POST /auth/logout`                             | RF-014                                                                    | UC-06                     |
-| `POST /auth/password-reset/request`, `/confirm` | RF-014 (paridade funcional)                                               | —                         |
-| `GET /auth/session`                             | RF-013                                                                    | UC-06                     |
-| `GET/POST /admin/*`                             | — (Bloco 7 do doc 99)                                                     | —                         |
+| Endpoint                                        | Related Requirements                                                       | Related Use Cases   |
+| ----------------------------------------------- | -------------------------------------------------------------------------- | ------------------- |
+| `GET /proxy/{path}`                             | — (inherited from the MVP)                                                 | —                   |
+| `GET /artworks/{artwork_id}/insight-card`       | RF-001, RF-002, RF-003, RF-007, RF-009, RF-016 to RF-019, RNF-001, RNF-002 | UC-01, UC-02, UC-03 |
+| `POST /auth/register`                           | RF-014 (functional parity)                                                 | —                   |
+| `POST /auth/login`                              | RF-013, RF-014                                                             | UC-06               |
+| `POST /auth/logout`                             | RF-014                                                                     | UC-06               |
+| `POST /auth/password-reset/request`, `/confirm` | RF-014 (functional parity)                                                 | —                   |
+| `GET /auth/session`                             | RF-013                                                                     | UC-06               |
+| `GET/POST /admin/*`                             | — (Block 7 of doc 99)                                                      | —                   |
 
-> A matriz completa, conectando requisitos a componentes de arquitetura e casos de teste, será formalizada no documento 16 — Matriz de Rastreabilidade.
+> The complete matrix, connecting requirements to architecture components and test cases, will be formalized in document 16 — Traceability Matrix.

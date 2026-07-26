@@ -1,35 +1,35 @@
 # Prompt Engineering — Art Archive AI
 
-**Versão:** 1.0
-**Data:** 2026-07-03
-**Status:** Em revisão — prompts base sujeitos a refinamento iterativo
-**Documentos base:** [01 — Visão e Escopo](./01-visao-escopo.md), [02 — Requisitos](./02-requisitos.md), [04 — Arquitetura do Sistema](./04-arquitetura.md), [05 — Banco de Dados](./05-banco-de-dados.md), [06 — Fluxo de Persistência](./06-fluxo-persistencia.md), [09 — Pipeline de IA](./09-pipeline-ia.md)
+**Version:** 1.0
+**Date:** 2026-07-03
+**Status:** In review — base prompts subject to iterative refinement
+**Base documents:** [01 — Vision and Scope](./01-vision-scope.md), [02 — Requirements](./02-requirements.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md), [06 — Persistence Flow](./06-persistence-flow.md), [09 — AI Pipeline](./09-ai-pipeline.md)
 
 ---
 
-## 1. Objetivo
+## 1. Purpose
 
-O doc 09 especificou **como** o pipeline monta e envia o prompt (estrutura em duas mensagens, saída estruturada via JSON Schema, etapas de validação). Este documento especifica **o texto** desse prompt — a versão inicial (`v1`) usada para desenvolvimento — e a estratégia de versionamento, teste e evolução que orientará os refinamentos futuros.
+Doc 09 specified **how** the pipeline assembles and sends the prompt (two-message structure, structured output via JSON Schema, validation steps). This document specifies **the text** of that prompt — the initial version (`v1`) used for development — and the versioning, testing, and evolution strategy that will guide future refinements.
 
-**Este é um documento vivo por natureza:** os prompts abaixo são o ponto de partida. Espera-se que sejam ajustados conforme o autor observar a qualidade real das gerações (doc 14 — Avaliação de Qualidade do Conteúdo Gerado). A Seção 6 define exatamente como registrar essa evolução.
-
----
-
-## 2. Por que os prompts são escritos em inglês
-
-Os prompts e o conteúdo gerado são em inglês, não em português, pelos seguintes motivos:
-
-- A Harvard Art Museums API retorna metadados predominantemente em inglês (título, técnica, período, cultura) — instruir o modelo em português exigiria tradução implícita dos metadados, aumentando o risco de imprecisão.
-- O doc 01 (§8, premissa 6) já assume que "conteúdo gerado em inglês é aceitável" nesta fase do projeto.
-- LLMs multimodais como o usado no Azure OpenAI têm desempenho mais consistente quando instrução, contexto e saída esperada estão no mesmo idioma.
+**This is a living document by nature:** the prompts below are the starting point. They are expected to be adjusted as the author observes the actual quality of the generations (doc 14 — Quality Evaluation of Generated Content). Section 6 defines exactly how to record that evolution.
 
 ---
 
-## 3. Estrutura do Prompt v1
+## 2. Why the prompts are written in English
 
-Conforme o doc 09 (§5), o prompt é composto por uma mensagem de sistema e uma mensagem de usuário (texto + imagem), com saída forçada por JSON Schema.
+The prompts and the generated content are in English, not Portuguese, for the following reasons:
 
-### 3.1 Mensagem de Sistema (`system`)
+- The Harvard Art Museums API returns metadata predominantly in English (title, technique, period, culture) — instructing the model in Portuguese would require implicit translation of the metadata, increasing the risk of inaccuracy.
+- Doc 01 (§8, premise 6) already assumes that "content generated in English is acceptable" at this stage of the project.
+- Multimodal LLMs such as the one used in Azure OpenAI perform more consistently when instruction, context, and expected output are in the same language.
+
+---
+
+## 3. Structure of Prompt v1
+
+Per doc 09 (§5), the prompt is composed of a system message and a user message (text + image), with output enforced via JSON Schema.
+
+### 3.1 System Message (`system`)
 
 ```text
 You are an expert art historian and museum curator writing for a general audience
@@ -67,7 +67,7 @@ Rules:
   the structured output.
 ```
 
-### 3.2 Mensagem de Usuário (`user`) — Template
+### 3.2 User Message (`user`) — Template
 
 ```text
 Artwork metadata:
@@ -86,9 +86,9 @@ Analyze the attached image together with this metadata and produce the three
 required fields.
 ```
 
-A imagem é anexada como um segundo bloco de conteúdo na mesma mensagem (`image_url`), não como texto — ver payload completo na Seção 4.
+The image is attached as a second content block in the same message (`image_url`), not as text — see the full payload in Section 4.
 
-### 3.3 JSON Schema de Saída
+### 3.3 Output JSON Schema
 
 ```json
 {
@@ -106,11 +106,11 @@ A imagem é anexada como um segundo bloco de conteúdo na mesma mensagem (`image
 }
 ```
 
-Este schema corresponde exatamente ao contrato de saída `GeneratedContent` definido no doc 09 (§9).
+This schema corresponds exactly to the `GeneratedContent` output contract defined in doc 09 (§9).
 
 ---
 
-## 4. Exemplo de Payload Completo (Azure OpenAI Chat Completions)
+## 4. Example of a Complete Payload (Azure OpenAI Chat Completions)
 
 ```json
 {
@@ -119,71 +119,71 @@ Este schema corresponde exatamente ao contrato de saída `GeneratedContent` defi
   "max_tokens": 900,
   "response_format": {
     "type": "json_schema",
-    "json_schema": { "...": "ver Seção 3.3" }
+    "json_schema": { "...": "see Section 3.3" }
   },
   "messages": [
-    { "role": "system", "content": "<mensagem de sistema — Seção 3.1>" },
+    { "role": "system", "content": "<system message — Section 3.1>" },
     {
       "role": "user",
       "content": [
-        { "type": "text", "text": "<mensagem de usuário preenchida — Seção 3.2>" },
-        { "type": "image_url", "image_url": { "url": "<image_url da obra>" } }
+        { "type": "text", "text": "<filled-in user message — Section 3.2>" },
+        { "type": "image_url", "image_url": { "url": "<image_url of the artwork>" } }
       ]
     }
   ]
 }
 ```
 
-Os valores de `temperature` e `max_tokens` replicam as recomendações já justificadas no doc 09 (§6).
+The `temperature` and `max_tokens` values replicate the recommendations already justified in doc 09 (§6).
 
 ---
 
-## 5. Estratégia de Versionamento
+## 5. Versioning Strategy
 
-- **Formato do identificador:** `v{N}` (inteiro incremental) — ex.: `v1`, `v2` — armazenado em `artwork_ai_content.prompt_version` (doc 05, RNF-006).
-- **Regra de bump:** qualquer alteração no texto da mensagem de sistema, no template da mensagem de usuário, ou no JSON Schema de saída gera uma nova versão — mesmo mudanças pequenas de wording. Essa rigidez é intencional: o objetivo do RNF-006 é permitir correlacionar precisamente qual texto de prompt produziu qual conteúdo já persistido, para fins de auditoria de qualidade (doc 14).
-- **Mudanças que NÃO exigem novo prompt_version:** ajustes de parâmetros de infraestrutura que não alteram o texto do prompt em si (ex.: troca de `max_tokens` por motivo de custo, sem mudança de instrução) — devem ser registrados apenas no changelog do código, não versionados como prompt.
-- **Armazenamento no código:** cada versão do prompt vive em um arquivo próprio (ex.: `backend/app/prompts/insight_card/v1.py`, `v2.py`), nunca sobrescrita — permite que conteúdo antigo (gerado por uma versão anterior) continue rastreável mesmo após a versão ativa mudar.
-- **Sem regeneração retroativa:** trocar a versão ativa do prompt não regenera automaticamente obras já processadas (consistente com a doc 05, Decisão 7 — nenhuma coluna de status "desatualizado"). Uma obra só é reprocessada manualmente, via `POST /admin/artworks/{artwork_id}/regenerate` (doc 07, §6).
-
----
-
-## 6. Processo de Evolução e Refinamento
-
-Como o autor pretende refinar os prompts iterativamente, o processo recomendado é:
-
-1. Gerar conteúdo para um conjunto fixo de obras de teste (as mesmas 3–5 obras usadas na validação do doc 09, Fase 3 do doc 99) a cada nova versão de prompt.
-2. Comparar as saídas lado a lado com a versão anterior, avaliando os critérios do doc 14 (precisão histórica, ausência de alucinação, coerência, tom adequado).
-3. Registrar a nova versão na tabela da Seção 7 antes de trocá-la como versão ativa no pipeline.
-4. Manter as versões anteriores no código (Seção 5) para permitir comparação retroativa a qualquer momento.
-
-### Pontos já identificados como candidatos a refinamento futuro
-
-- **Reforço estrutural de `comparative_analysis`:** hoje a exigência de "pelo menos duas referências" (RF-003) é apenas instrução textual, sem validação estrutural. Uma v2 poderia mudar o schema para um array de objetos (`{ "artist_or_work": string, "similarity": string }` com `minItems: 2`), tornando o requisito verificável programaticamente em vez de apenas por instrução.
-- **Calibração de temperatura:** `0.35` é um ponto de partida; pode exigir ajuste para baixo se a avaliação de qualidade (doc 14) revelar alucinação, ou para cima se o texto sair repetitivo entre obras semelhantes.
-- **Instrução anti-alucinação:** a regra atual ("rely on general historical and stylistic context instead of inventing specifics") é uma primeira tentativa; pode precisar de exemplos explícitos (few-shot) se a avaliação qualitativa mostrar invenção de datas ou nomes.
+- **Identifier format:** `v{N}` (incremental integer) — e.g., `v1`, `v2` — stored in `artwork_ai_content.prompt_version` (doc 05, RNF-006).
+- **Bump rule:** any change to the system message text, the user message template, or the output JSON Schema generates a new version — even small wording changes. This rigidity is intentional: the goal of RNF-006 is to allow precisely correlating which prompt text produced which already-persisted content, for quality audit purposes (doc 14).
+- **Changes that do NOT require a new prompt_version:** infrastructure parameter adjustments that do not change the prompt text itself (e.g., swapping `max_tokens` for cost reasons, with no instruction change) — these must be recorded only in the code changelog, not versioned as a prompt.
+- **Storage in code:** each prompt version lives in its own file (e.g., `backend/app/prompts/insight_card/v1.py`, `v2.py`), never overwritten — this allows old content (generated by a previous version) to remain traceable even after the active version changes.
+- **No retroactive regeneration:** switching the active prompt version does not automatically regenerate already-processed artworks (consistent with doc 05, Decision 7 — no "outdated" status column). An artwork is only reprocessed manually, via `POST /admin/artworks/{artwork_id}/regenerate` (doc 07, §6).
 
 ---
 
-## 7. Registro de Versões
+## 6. Evolution and Refinement Process
 
-| Versão | Data       | Mudança                                                                                                                                                                     | Motivo                                      |
-| ------ | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `v1`   | 2026-07-03 | Versão inicial — prompt único gerando os três campos (`historical_context`, `comparative_analysis`, `alt_text`) em uma única chamada, com saída estruturada via JSON Schema | Primeira implementação do pipeline (doc 09) |
+Since the author intends to refine the prompts iteratively, the recommended process is:
 
-> Novas linhas devem ser adicionadas a esta tabela **antes** de qualquer nova versão se tornar a versão ativa no pipeline (Seção 5).
+1. Generate content for a fixed set of test artworks (the same 3–5 artworks used in the doc 09 validation, Phase 3 of doc 99) for each new prompt version.
+2. Compare the outputs side by side with the previous version, evaluating the doc 14 criteria (historical accuracy, absence of hallucination, coherence, appropriate tone).
+3. Record the new version in the Section 7 table before switching it to the active version in the pipeline.
+4. Keep previous versions in the code (Section 5) to allow retroactive comparison at any time.
+
+### Points already identified as candidates for future refinement
+
+- **Structural reinforcement of `comparative_analysis`:** today the requirement of "at least two references" (RF-003) is only a textual instruction, with no structural validation. A v2 could change the schema to an array of objects (`{ "artist_or_work": string, "similarity": string }` with `minItems: 2`), making the requirement programmatically verifiable instead of only instruction-based.
+- **Temperature calibration:** `0.35` is a starting point; it may need to be adjusted downward if the quality evaluation (doc 14) reveals hallucination, or upward if the text turns out repetitive across similar artworks.
+- **Anti-hallucination instruction:** the current rule ("rely on general historical and stylistic context instead of inventing specifics") is a first attempt; it may need explicit examples (few-shot) if the qualitative evaluation shows invented dates or names.
 
 ---
 
-## 8. Rastreabilidade
+## 7. Version Log
 
-| Elemento do Prompt                              | Requisitos Relacionados | Documentos Relacionados |
-| ----------------------------------------------- | ----------------------- | ----------------------- |
-| Instrução de `historical_context`               | RF-002                  | doc 09 (§3, §5)         |
-| Instrução de `comparative_analysis`             | RF-003                  | doc 09 (§3, §5)         |
-| Instrução de `alt_text` (50–300 caracteres)     | RF-007                  | doc 09 (§7)             |
-| Regra "omitir campos ausentes"                  | RF-002 (cenário 2)      | doc 09 (§3)             |
-| Geração conjunta dos três campos em uma chamada | RF-009                  | doc 09 (§8, decisão 4)  |
-| `prompt_version`                                | RNF-006                 | doc 05 (§5.4)           |
+| Version | Date       | Change                                                                                                                                                                            | Reason                                        |
+| ------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `v1`    | 2026-07-03 | Initial version — a single prompt generating the three fields (`historical_context`, `comparative_analysis`, `alt_text`) in a single call, with structured output via JSON Schema | First implementation of the pipeline (doc 09) |
 
-> A matriz completa, conectando requisitos a componentes de arquitetura e casos de teste, será formalizada no documento 16 — Matriz de Rastreabilidade.
+> New rows must be added to this table **before** any new version becomes the active version in the pipeline (Section 5).
+
+---
+
+## 8. Traceability
+
+| Prompt Element                                   | Related Requirements | Related Documents       |
+| ------------------------------------------------ | -------------------- | ----------------------- |
+| `historical_context` instruction                 | RF-002               | doc 09 (§3, §5)         |
+| `comparative_analysis` instruction               | RF-003               | doc 09 (§3, §5)         |
+| `alt_text` instruction (50–300 characters)       | RF-007               | doc 09 (§7)             |
+| "Omit missing fields" rule                       | RF-002 (scenario 2)  | doc 09 (§3)             |
+| Joint generation of the three fields in one call | RF-009               | doc 09 (§8, decision 4) |
+| `prompt_version`                                 | RNF-006              | doc 05 (§5.4)           |
+
+> The full matrix, connecting requirements to architecture components and test cases, will be formalized in document 16 — Traceability Matrix.
