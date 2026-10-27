@@ -3,17 +3,12 @@ services:
   api:
     restart: always
     image: "art-archive-api"
-    build: ./proxy
+    build: ./backend
     ports:
-      - "5000:5000"
+      - "8000:8000"
     network_mode: "host"
-    volumes:
-      - type: bind
-        source: ./proxy/.firebaseAdminSDK.json
-        target: /usr/src/app/.firebaseAdminSDK.json
-      - type: bind
-        source: ./proxy/.env
-        target: /usr/src/app/.env
+    env_file:
+      - path: ./backend/.env
   webapp:
     restart: always
     image: "art-archive-webapp"
