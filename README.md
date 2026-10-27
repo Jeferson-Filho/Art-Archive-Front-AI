@@ -120,6 +120,13 @@ Art-Archive-Front/
 - [Figma Prototype](https://www.figma.com/design/MsPqVyoHSHn9voeHd1Ebfy/Art-Archive?node-id=0-1&t=zHTmqiityQr73TZE-1)
 - [Harvard Art Museum API](https://github.com/harvardartmuseums/api-docs)
 - [Activity Diagrams and Documentation](./documentation/)
+- [Specifications (Spec-Driven Development)](./documentation/specs/) — the API contract is [doc 07](./documentation/specs/07-api-contract.md)
+- **Interactive API docs** — with the backend running, Swagger UI at `http://localhost:8000/docs` (generated from the code)
+- **Postman collection** — [`backend/postman/`](./backend/postman/), with tests on every request. Import it into Postman, or run it from the command line:
+  ```bash
+  npx newman run backend/postman/art-archive-api.postman_collection.json \
+    -e backend/postman/art-archive-local.postman_environment.json
+  ```
 
 ---
 
