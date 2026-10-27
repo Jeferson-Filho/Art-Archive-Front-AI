@@ -19,12 +19,19 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from app.core.config import get_settings
+from app.core.errors import ErrorResponse, harvard_api_error
 
-router = APIRouter(prefix="/proxy", tags=["harvard-proxy"])
+router = APIRouter(prefix="/proxy", tags=["Harvard Proxy"])
 
 
-@router.get("/{path:path}")
+@router.get(
+    "/{path:path}",
+    summary="Forward a request to the Harvard Art Museums API",
+    responses={502: {"model": ErrorResponse, "description": "`HARVARD_API_ERROR`"}},
+)
 async def proxy_harvard(path: str, request: Request) -> JSONResponse:
+    """Forwards `path` and every query parameter to Harvard, with the API key
+    attached server-side; returns Harvard's body with `info.next`/`info.prev` removed."""
     settings = get_settings()
 
     params = dict(request.query_params)
@@ -36,31 +43,18 @@ async def proxy_harvard(path: str, request: Request) -> JSONResponse:
         try:
             response = await client.get(url, params=params)
         except httpx.HTTPError:
-            return _harvard_api_error()
+            raise harvard_api_error() from None
 
     if response.status_code != 200:
-        return _harvard_api_error()
+        raise harvard_api_error()
 
     try:
         body = response.json()
     except ValueError:
-        return _harvard_api_error()
+        raise harvard_api_error() from None
 
     if isinstance(body, dict) and "info" in body and isinstance(body["info"], dict):
         body["info"].pop("next", None)
         body["info"].pop("prev", None)
 
     return JSONResponse(content=body)
-
-
-def _harvard_api_error() -> JSONResponse:
-    """Standard error envelope (doc 07 §1), code `HARVARD_API_ERROR` (doc 07 §3/§6)."""
-    return JSONResponse(
-        status_code=502,
-        content={
-            "error": {
-                "code": "HARVARD_API_ERROR",
-                "message": "The Harvard Art Museums API returned an error or a non-JSON response.",
-            }
-        },
-    )
