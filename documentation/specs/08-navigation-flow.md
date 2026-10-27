@@ -141,7 +141,7 @@ flowchart LR
     AdminDetail -->|"Regenerate (optional)"| AdminDetail
 ```
 
-> **Pending dependency:** access to `/admin/*` requires the distinction of administrative privilege (`is_admin`), which is not yet defined in the schema — a pending issue already recorded in doc 07 (§8, item 1). Navigation to this section must be blocked until this definition is resolved.
+> **Pending dependency:** access to `/admin/*` requires the distinction of administrative privilege (`is_admin`), which is not yet defined in the schema — a pending issue tracked in doc 00 (§7), with this section as its source. Navigation to this section must be blocked until this definition is resolved. The administrative panel is deferred this cycle (doc 99, §2.2).
 
 ---
 

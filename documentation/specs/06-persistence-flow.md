@@ -1,7 +1,7 @@
 # Persistence Flow Diagram — Art Archive AI
 
-**Version:** 2.1
-**Date:** 2026-07-26
+**Version:** 2.2
+**Date:** 2026-10-27
 **Status:** In review
 **Base documents:** [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md)
 
@@ -24,6 +24,8 @@ It also covers a scenario not detailed at the architecture level: **two simultan
 > **Change Note (2026-07-26):** revised to align with docs 02.1/02.2, which superseded the original `02-requirements.md` this flow was designed against. The previous version modeled a single check ("does the record exist?"), a single generation call producing all three fields, and a single all-or-nothing `INSERT ... ON CONFLICT DO NOTHING`. That no longer matches RF-001 (the two Insight Card blocks are checked and generated independently, 0/1/2 calls depending on what's missing) or RF-013 (Alt Text has its own dedicated call and flow). The concurrency-handling insert (Section 6) is also revised: because a row can now be partially filled, the previous "insert or discard" pattern is replaced by a per-column, first-writer-wins upsert.
 >
 > **Change Note (2026-07-26, v2.1):** the historical-context and comparative-analysis blocks are no longer served by a single bundled "Insight Card" backend flow. Each is now its own independent flow, behind its own dedicated HTTP request (doc 07, §4) — mirroring how Alt Text already worked. The single combined loading/displayed/error state the Insight Card UI shows (RF-001, RF-005, RF-006, RF-007) is still produced, but now by the **front-end**, which fires both requests in parallel and combines their two independent responses — this logic is now formalized in the new Section 5. All subsequent sections have been renumbered accordingly (former §4–§8 are now §6–§10).
+>
+> **Change Note (2026-10-27, v2.2):** Sections 2 and 3 now model the artwork existence check that runs between "block missing" and generation: `404 ARTWORK_NOT_FOUND` when the artwork is absent from Harvard, `502 HARVARD_API_ERROR` when Harvard fails during the check. The `404` was specified in doc 07 (§4) but never drawn here — the pending issue doc 07 (§8) carried; the `502` is an author decision of the same date (doc 07, §6.1). Section 7's pseudocode and Section 9's edge cases are updated to match, and a new Section 11 records two pending issues found while implementing doc 99 Phase 3.
 
 ---
 
@@ -39,7 +41,14 @@ flowchart TD
     HExists -- "Yes (RF-001)" --> HFromDB["Return persisted historical_context + its sources"]
     HFromDB --> HEndCached(["End — response within 500ms (RNF-001)"])
 
-    HExists -- No --> HTrigger["Trigger generate_historical_context()<br/>(doc 09)"]
+    HExists -- No --> HHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
+    HHarvard --> HArtwork{"Artwork exists?"}
+    HArtwork -- "No" --> HNotFound["Return 404 ARTWORK_NOT_FOUND"]
+    HNotFound --> HEndNotFound(["End — nothing generated"])
+    HArtwork -- "Harvard failed" --> HHarvardError["Return 502 HARVARD_API_ERROR"]
+    HHarvardError --> HEndHarvardError(["End — nothing generated"])
+
+    HArtwork -- Yes --> HTrigger["Trigger generate_historical_context()<br/>(doc 09)"]
     HTrigger --> HResult{"Result"}
 
     HResult -- "Non-empty text (within 60s)" --> HPersist["Upsert historical_context<br/>(Section 6)"]
@@ -61,7 +70,10 @@ flowchart TD
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | Query `artwork_ai_content.historical_context`      | First action taken upon receiving the request — no AI call occurs before this check                                                       | RF-001                                      |
 | `historical_context` already persisted?            | Checked independently of `comparative_analysis` — this request never looks at, or waits on, the other column                              | RF-001                                      |
-| Trigger `generate_historical_context()`            | Only called if the column is missing                                                                                                      | RF-001, RF-002, RF-009                      |
+| Fetch the artwork from Harvard                     | Only reached when the column is missing, so a persisted block never pays for a Harvard round trip. Confirms the artwork exists and supplies the metadata the pipeline needs (doc 09, §3) | RF-001, RNF-001                             |
+| Artwork exists? — No                               | `404 ARTWORK_NOT_FOUND`, before any pipeline call. Harvard signals absence with HTTP `200` and `{"error": "Not found"}`, so it is read from the body (doc 07, §4) | doc 07 §4                                   |
+| Artwork exists? — Harvard failed                   | Harvard unreachable, timed out, or answered with an error: `502 HARVARD_API_ERROR`, nothing generated (author decision, 2026-10-27)      | doc 07 §6.1                                 |
+| Trigger `generate_historical_context()`            | Only called if the column is missing and the artwork exists                                                                               | RF-001, RF-002, RF-009                      |
 | Result: non-empty text                             | Happy path — content is persisted (Section 6) and returned as part of a `200`                                                             | RF-002 (scenario 1), RF-004                 |
 | Result: empty text (insufficient info / no source) | Valid LLM outcome, not an error — stays unpersisted, returned as `200` with `historical_context: ""`, retried on the artwork's next visit | RF-002 (scenario 3), RF-010 (scenario 10.2) |
 | Result: technical failure (non-timeout) within 60s | Provider error or malformed response — returned identically to the empty-text case, still a `200` (RF-007, scenario 1)                    | RF-007                                      |
@@ -81,7 +93,14 @@ flowchart TD
     CExists -- "Yes (RF-001)" --> CFromDB["Return persisted comparative_analysis + its sources"]
     CFromDB --> CEndCached(["End — response within 500ms (RNF-001)"])
 
-    CExists -- No --> CTrigger["Trigger generate_comparative_analysis()<br/>(doc 09)"]
+    CExists -- No --> CHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
+    CHarvard --> CArtwork{"Artwork exists?"}
+    CArtwork -- "No" --> CNotFound["Return 404 ARTWORK_NOT_FOUND"]
+    CNotFound --> CEndNotFound(["End — nothing generated"])
+    CArtwork -- "Harvard failed" --> CHarvardError["Return 502 HARVARD_API_ERROR"]
+    CHarvardError --> CEndHarvardError(["End — nothing generated"])
+
+    CArtwork -- Yes --> CTrigger["Trigger generate_comparative_analysis()<br/>(doc 09)"]
     CTrigger --> CResult{"Result"}
 
     CResult -- "Non-empty text (within 60s)" --> CPersist["Upsert comparative_analysis<br/>(Section 6)"]
@@ -103,7 +122,8 @@ Mirrors Section 2 in every respect, calling `generate_comparative_analysis()` in
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
 | Query `artwork_ai_content.comparative_analysis`    | First action taken upon receiving the request — no AI call occurs before this check                                                         | RF-001                                        |
 | `comparative_analysis` already persisted?          | Checked independently of `historical_context` — this request never looks at, or waits on, the other column                                  | RF-001                                        |
-| Trigger `generate_comparative_analysis()`          | Only called if the column is missing                                                                                                        | RF-001, RF-003, RF-009                        |
+| Fetch the artwork from Harvard / Artwork exists?   | Identical to Section 2.2: `404 ARTWORK_NOT_FOUND` when absent, `502 HARVARD_API_ERROR` when Harvard fails, both before any pipeline call      | RF-001, doc 07 §4, §6.1                       |
+| Trigger `generate_comparative_analysis()`          | Only called if the column is missing and the artwork exists                                                                                 | RF-001, RF-003, RF-009                        |
 | Result: non-empty text                             | Happy path — content is persisted (Section 6) and returned as part of a `200`                                                               | RF-003 (scenario 1), RF-004                   |
 | Result: empty text (insufficient info / no source) | Valid LLM outcome, not an error — stays unpersisted, returned as `200` with `comparative_analysis: ""`, retried on the artwork's next visit | RF-003 (scenario 3.2), RF-010 (scenario 10.2) |
 | Result: technical failure (non-timeout) within 60s | Provider error or malformed response — returned identically to the empty-text case, still a `200` (RF-007, scenario 1)                      | RF-007                                        |
@@ -218,7 +238,9 @@ async def get_or_generate_historical_context(artwork_id: int) -> TextBlockRespon
     if row and row.historical_context is not None:
         return TextBlockResponse.from_db(row.historical_context, sources=row.historical_context_sources)
 
-    artwork = await harvard_proxy.get_object(artwork_id)
+    artwork = await harvard_proxy.get_object(artwork_id)  # Harvard failure → 502 HARVARD_API_ERROR (doc 07 §6.1)
+    if artwork is None:
+        raise ArtworkNotFoundError()  # → 404 ARTWORK_NOT_FOUND, before any pipeline call (doc 07 §4)
     try:
         result = await ai_pipeline.generate_historical_context(
             artwork.primary_image_url, artwork.metadata, timeout=GENERATION_TIMEOUT_SECONDS  # RNF-002: 60s
@@ -287,6 +309,8 @@ RNF-002 frames historical context, comparative analysis, and Alt Text as sharing
 | One Insight Card request times out (504), the other returns successfully | The front-end (Section 5) sees one 504 and one 200-with-content; since at least one response has content, the successful block is shown — no error is displayed anywhere (RF-007, scenario 1)                                 | RF-007, RNF-002                          |
 | Both Insight Card requests time out (504)                                | The front-end (Section 5) sees two 504s — timeout-specific error message (RF-007, scenario 3); the artwork's title, image, and metadata remain visible and functional                                                         | RF-006, RF-007, RNF-002                  |
 | Both Insight Card requests come back with no content, but not both 504   | Standard "was not possible to generate" message (RF-007, scenario 2), decided front-end-side (Section 5) — same message as the "both genuinely empty" case (RF-005, scenario 3)                                               | RF-005, RF-007                           |
+| `artwork_id` does not exist in the Harvard API                           | `404 ARTWORK_NOT_FOUND` from the existence check (Sections 2–3), before any pipeline call. Never reached for an artwork whose block is already persisted                                                                     | doc 07 §4                                |
+| Harvard fails during the existence check                                 | `502 HARVARD_API_ERROR`, nothing generated or persisted. Front-end-side (Section 5) it counts as a response without content that is not a timeout                                                                             | doc 07 §6.1                              |
 
 ---
 
@@ -304,5 +328,18 @@ RNF-002 frames historical context, comparative analysis, and Alt Text as sharing
 | Partial persistence (only one block succeeds)                                   | RF-004 (scenario 3)            | UC-01             |
 | Concurrency conflict (per-column upsert)                                        | — (design decision)            | UC-01             |
 | Return of cached content                                                        | RF-001, RNF-001                | UC-02             |
+| Artwork existence check (Sections 2–3)                                          | — (doc 07 §4, §6.1)            | —                 |
 
 > The complete matrix, connecting requirements to architecture components and test cases, will be formalized in document 16 — Traceability Matrix.
+
+---
+
+## 11. Identified Pending Issues
+
+1. **A soft-deleted row blocks its artwork from ever being persisted again.** Reads filter on `expired_at IS NULL` (doc 05, §8), so once an artwork's row is expired, every block reads as missing and is regenerated. But the upsert of Section 6 conflicts on `artwork_id` — still the primary key of that same expired row — and only writes when the target column `IS NULL`:
+   - for a block the expired row **still holds**, the `WHERE` clause is false, so nothing is persisted and the artwork is regenerated on **every** visit, paying the LLM each time and never meeting RNF-001 again;
+   - for a block the expired row **lacks**, the new content is written **into the expired row**, where every read ignores it.
+
+   _Why it matters:_ the soft-delete policy (doc 04 §9, Decision 6) and the per-column upsert were each designed correctly in isolation, but together they cannot "un-retire" an artwork. _Urgency:_ low for this cycle — nothing in scope sets `expired_at` on `artwork_ai_content` (the administrative panel and its regenerate endpoint are deferred, doc 99 §2.2), so no row can reach this state yet. _Suggested solutions:_ (a) a surrogate primary key on `artwork_ai_content`, with a partial unique index on `artwork_id WHERE expired_at IS NULL`, so a retired row is preserved and a fresh active row is created beside it — a structural change to doc 05 (§6, Decision 1); or (b) when the conflicting row is expired, reset it to active, clearing its blocks — simpler, but it discards exactly the history the soft-delete policy exists to keep.
+
+2. **A database read failure is not specified.** RF-004 scenario 2 covers a *write* failure after generation; nothing covers the database being unavailable for the initial check. _Current behaviour (provisional):_ the request fails with `500 INTERNAL_ERROR` through the generic handler (doc 07, §6.1), which the front-end's aggregation (Section 5) treats as a response without content. _Alternative:_ treat an unreadable database as "block missing" and proceed to generation — keeps the Insight Card working during an outage, at the cost of an LLM call on every visit for as long as it lasts, with nothing persisted.
