@@ -18,6 +18,19 @@ export default function Object({ params }: { params: { objectId: string } }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [objectImages, setObjectImages] = useState<ImageDetails[]>([]);
 
+  // Tracked in state rather than read as `window.innerWidth` during render:
+  // the latter is evaluated on the server during SSR, where `window` is undefined.
+  const [isNarrowViewport, setIsNarrowViewport] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleResize = () => setIsNarrowViewport(window.innerWidth < 1500);
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
   const getObjectDetails = async (): Promise<RecordDetails | null> => {
     setIsLoading(true);
     if (!params.objectId) return null;
@@ -102,7 +115,7 @@ export default function Object({ params }: { params: { objectId: string } }) {
       {/* SIDE MENU - LEFT SIDE */}
       <div
         className={`bg-silver-gray h-full p-6 flex flex-col min-w-[330px] ${
-          window.innerWidth < 1500 ? "w-[30%]" : "w-[20%]"
+          isNarrowViewport ? "w-[30%]" : "w-[20%]"
         }`}
       >
         <div className="flex flex-col gap-1 border-l-[6px] pl-4 border-golden-yellow h-fit mb-6">
