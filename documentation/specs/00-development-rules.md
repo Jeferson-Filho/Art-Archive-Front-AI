@@ -88,9 +88,14 @@ Convenience list pointing to pending issues already identified during the drafti
 | ---------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Alt Text when the image is inaccessible        | doc 03 (§5), doc 06 (§7), doc 09 (§10) | Today, if the artwork's image cannot be processed, no Alt Text is persisted and the user receives no warning. Recommendation: generate a default warning text instead of omitting the field |
 | Missing administrative privilege in the schema | doc 07 (§8, item 1)                    | `users` has no field to distinguish administrators from regular visitors, needed for the `/admin/*` endpoints                                                                               |
-| Missing password reset token storage           | doc 07 (§8, item 2)                    | `POST /auth/password-reset/confirm` depends on a token table with expiration that does not yet exist in doc 05                                                                              |
+| Artwork nonexistent in the Harvard API         | doc 07 (§8, item 1)                    | `404 ARTWORK_NOT_FOUND` is specified in doc 07 (§4) but was never added as a node to doc 06's flowcharts. Scheduled for doc 99, Phase 3                                                     |
+| Alt Text deferred out of this cycle            | doc 99 (§2.2)                          | RF-011/RF-012/RF-013 are not built this cycle. The image `alt` attribute keeps the MVP's generic title fallback, which RF-012 forbids. Accepted deviation, not an oversight                 |
+| ARIA/accessibility deferred out of this cycle  | doc 99 (§2.2)                          | RF-014 through RF-025 and RNF-004 are not built this cycle. Doc 01 (§7) success criterion 4 is consequently not met                                                                        |
+| Password reset email transport stubbed         | doc 99 (§3, Decision 7)                | Reset links are logged to the backend console rather than emailed. Deviates from RF-029 scenario 029.1; must be closed before any non-development deployment                               |
 
 > This table must be updated whenever a new pending issue is recorded in any document, and a row must be removed only when the corresponding pending issue is formally resolved in its source document.
+>
+> **Removed (2026-10-17):** _Missing password reset token storage_ (doc 07, §8 item 2) — formally resolved in doc 05 v2.1, which added the `password_reset_tokens` table backing `POST /auth/password-reset/confirm`.
 
 ---
 

@@ -304,7 +304,9 @@ The three endpoints above are fired by the front-end in parallel, as three indep
 
 1. **Artwork nonexistent in the Harvard API:** neither doc 06 flow explicitly models an `artwork_id` that does not exist in the Harvard Art Museums API — this document adds this case as `404 ARTWORK_NOT_FOUND` on all three per-block endpoints, verified before triggering any AI Pipeline call. Still not formalized as a node in doc 06's flowcharts — recommend adding it there before implementation.
 
-I recommend resolving items 1 and 3 before moving forward with implementation (doc 99, Phase 2 and Phase 8).
+I recommend resolving item 1 before moving forward with implementation — it is scheduled for **doc 99, Phase 3** (REST skeleton and error catalog).
+
+> **Change Note (2026-10-17):** the closing line previously read "resolving items 1 and 3", referring to a three-item list. Items 2 and 3 of that list — the missing `password_reset_tokens` table and the bundling of Alt Text into the Insight Card response — were resolved in doc 05 v2.1 and in this document's own v2.1 revision respectively, and were removed from the list without the closing line being updated. The phase reference, which pointed at a document that did not yet exist, is now resolved against doc 99 v1.0.
 
 ---
 
