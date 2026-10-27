@@ -101,7 +101,8 @@ class PasswordResetToken(Base):
 
 class ArtworkAIContent(Base):
     """
-    One row per artwork with at least one generated block.
+    At most one active row per artwork with at least one generated block, plus
+    any retired rows (`expired_at` set), which are kept rather than deleted.
 
     The three content columns are independently nullable and each carries its
     own prompt version and timestamp: they are checked, generated and
@@ -115,8 +116,11 @@ class ArtworkAIContent(Base):
 
     __tablename__ = "artwork_ai_content"
 
-    # Harvard API object ID as the natural key (doc 05, §6, Decision 1)
-    artwork_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    # Surrogate key (doc 05, §6, Decision 12): an artwork may keep retired rows
+    # beside its single active one, so artwork_id cannot be the primary key.
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=_UUID_PK)
+    # Harvard API object ID — unique among active rows only (partial index below)
+    artwork_id: Mapped[int] = mapped_column(Integer, nullable=False)
 
     historical_context: Mapped[str | None] = mapped_column(Text, nullable=True)
     historical_context_prompt_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
@@ -143,6 +147,12 @@ class ArtworkAIContent(Base):
             "historical_context IS NOT NULL OR comparative_analysis IS NOT NULL OR alt_text IS NOT NULL",
             name="chk_artwork_ai_content_has_block",
         ),
+        Index(
+            "ux_artwork_ai_content_active_artwork_id",
+            "artwork_id",
+            unique=True,
+            postgresql_where=text("expired_at IS NULL"),
+        ),
     )
 
 
@@ -152,8 +162,9 @@ class ArtworkContentSource(Base):
     __tablename__ = "artwork_content_sources"
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=_UUID_PK)
-    artwork_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("artwork_ai_content.artwork_id", ondelete="CASCADE"), nullable=False
+    # The exact row this source was generated for, active or retired (doc 05, §6, Decision 12)
+    content_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("artwork_ai_content.id", ondelete="CASCADE"), nullable=False
     )
     block_type: Mapped[str] = mapped_column(String(30), nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
@@ -166,5 +177,5 @@ class ArtworkContentSource(Base):
             "block_type IN ('historical_context', 'comparative_analysis')",
             name="chk_sources_block_type",
         ),
-        Index("ix_sources_artwork_block", "artwork_id", "block_type"),
+        Index("ix_sources_content_block", "content_id", "block_type"),
     )

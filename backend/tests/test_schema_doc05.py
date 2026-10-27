@@ -42,7 +42,8 @@ EXPECTED_INDEXES = {
     "ix_sessions_expires_at",
     "ux_password_reset_tokens_token_hash",
     "ix_password_reset_tokens_user_id",
-    "ix_sources_artwork_block",
+    "ux_artwork_ai_content_active_artwork_id",
+    "ix_sources_content_block",
 }
 EXPECTED_CHECKS = {"chk_artwork_ai_content_has_block", "chk_sources_block_type"}
 
@@ -56,11 +57,13 @@ NULLABLE_COLUMNS = (
     "expired_at",
 )
 
+# The upsert of doc 06 (§6), targeting the partial unique index of doc 05 (§6, Decision 12)
 UPSERT_SQL = (
-    "INSERT INTO artwork_ai_content (artwork_id, comparative_analysis, created_at, updated_at) "
-    "VALUES (-1, :val, now(), now()) "
-    "ON CONFLICT (artwork_id) DO UPDATE SET comparative_analysis = EXCLUDED.comparative_analysis, "
-    "updated_at = now() WHERE artwork_ai_content.comparative_analysis IS NULL"
+    "INSERT INTO artwork_ai_content (artwork_id, {col}, created_at, updated_at) "
+    "VALUES (:artwork_id, :val, now(), now()) "
+    "ON CONFLICT (artwork_id) WHERE expired_at IS NULL DO UPDATE SET {col} = EXCLUDED.{col}, "
+    "updated_at = now() WHERE artwork_ai_content.{col} IS NULL "
+    "RETURNING id"
 )
 
 
@@ -102,7 +105,35 @@ async def check_catalog(conn) -> None:
     for col in NULLABLE_COLUMNS:
         check(f"{col} nullable", nullable.get(col) == "YES", f"got {nullable.get(col)}")
     check("created_at NOT NULL", nullable.get("created_at") == "NO")
-    check("artwork_id NOT NULL (PK)", nullable.get("artwork_id") == "NO")
+    check("id NOT NULL", nullable.get("id") == "NO")
+    check("artwork_id NOT NULL", nullable.get("artwork_id") == "NO")
+
+    print("\nartwork_ai_content keys (doc 05 §6, Decision 12)")
+    result = await conn.execute(
+        text(
+            "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
+            "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+            "WHERE i.indrelid = 'artwork_ai_content'::regclass AND i.indisprimary"
+        )
+    )
+    check("primary key is the surrogate id", [r[0] for r in result] == ["id"])
+    result = await conn.execute(
+        text("SELECT indexdef FROM pg_indexes WHERE indexname = 'ux_artwork_ai_content_active_artwork_id'")
+    )
+    indexdef = result.scalar() or ""
+    check(
+        "artwork_id unique among active rows only",
+        "UNIQUE" in indexdef and "(artwork_id)" in indexdef and "WHERE (expired_at IS NULL)" in indexdef,
+        indexdef,
+    )
+    result = await conn.execute(
+        text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='artwork_content_sources'"
+        )
+    )
+    source_columns = {r[0] for r in result}
+    check("sources reference content_id, not artwork_id", "content_id" in source_columns and "artwork_id" not in source_columns)
 
     print("\nSoft delete column present on both tables (doc 05 §6, Decision 11)")
     for table in ("users", "artwork_ai_content"):
@@ -143,16 +174,19 @@ async def check_behaviour(conn) -> None:
     check("inserts with the other two blocks NULL", result.scalar() is True)
 
     print("\nPer-column, first-writer-wins upsert (doc 06 §6)")
-    await conn.execute(text(UPSERT_SQL), {"val": "first"})
+    upsert_comparative = text(UPSERT_SQL.format(col="comparative_analysis"))
+    returned = (await conn.execute(upsert_comparative, {"artwork_id": -1, "val": "first"})).scalar()
     result = await conn.execute(
-        text("SELECT historical_context, comparative_analysis FROM artwork_ai_content WHERE artwork_id=-1")
+        text("SELECT id, historical_context, comparative_analysis FROM artwork_ai_content WHERE artwork_id=-1")
     )
-    historical, comparative = result.one()
+    row_id, historical, comparative = result.one()
     check("merges into the same row, preserving the other block", historical == "ctx" and comparative == "first")
+    check("the winning write returns the row's id", returned == row_id)
 
-    await conn.execute(text(UPSERT_SQL), {"val": "second"})
+    returned = (await conn.execute(upsert_comparative, {"artwork_id": -1, "val": "second"})).scalar()
     result = await conn.execute(text("SELECT comparative_analysis FROM artwork_ai_content WHERE artwork_id=-1"))
     check("second write to the same block is discarded", result.scalar() == "first")
+    check("a discarded write returns no id, so it attaches no sources", returned is None)
 
     print("\nCHECK constraints reject invalid rows")
     await expect_rejected(
@@ -164,19 +198,48 @@ async def check_behaviour(conn) -> None:
     await expect_rejected(
         conn,
         "block_type 'alt_text' rejected (RF-010)",
-        "INSERT INTO artwork_content_sources (artwork_id, block_type, url) VALUES (-1, 'alt_text', 'u')",
+        f"INSERT INTO artwork_content_sources (content_id, block_type, url) VALUES ('{row_id}', 'alt_text', 'u')",
         "chk_sources_block_type",
     )
 
-    print("\nON DELETE CASCADE from artwork_ai_content to its sources")
+    print("\nRetiring an artwork's content (doc 05 §6, Decision 12)")
     await conn.execute(
         text(
-            "INSERT INTO artwork_content_sources (artwork_id, block_type, url) "
-            "VALUES (-1, 'historical_context', 'https://example.org')"
-        )
+            "INSERT INTO artwork_content_sources (content_id, block_type, url) "
+            "VALUES (:id, 'historical_context', 'https://example.org/old')"
+        ),
+        {"id": row_id},
     )
-    await conn.execute(text("DELETE FROM artwork_ai_content WHERE artwork_id=-1"))
-    result = await conn.execute(text("SELECT COUNT(*) FROM artwork_content_sources WHERE artwork_id=-1"))
+    await expect_rejected(
+        conn,
+        "a second active row for the same artwork is rejected",
+        "INSERT INTO artwork_ai_content (artwork_id, historical_context) VALUES (-1, 'duplicate')",
+        "ux_artwork_ai_content_active_artwork_id",
+    )
+    await conn.execute(text("UPDATE artwork_ai_content SET expired_at = now() WHERE id = :id"), {"id": row_id})
+    upsert_historical = text(UPSERT_SQL.format(col="historical_context"))
+    new_id = (await conn.execute(upsert_historical, {"artwork_id": -1, "val": "regenerated"})).scalar()
+    check("after retirement, the upsert creates a fresh active row", new_id is not None and new_id != row_id)
+    result = await conn.execute(
+        text("SELECT historical_context, expired_at IS NOT NULL FROM artwork_ai_content WHERE id = :id"),
+        {"id": row_id},
+    )
+    old_text, old_retired = result.one()
+    check("the retired row is preserved untouched", old_text == "ctx" and old_retired is True)
+    result = await conn.execute(
+        text("SELECT COUNT(*) FROM artwork_content_sources WHERE content_id = :id"), {"id": row_id}
+    )
+    check("the retired row keeps its own sources", result.scalar() == 1)
+    result = await conn.execute(
+        text("SELECT COUNT(*) FROM artwork_content_sources WHERE content_id = :id"), {"id": new_id}
+    )
+    check("the fresh row starts with no sources", result.scalar() == 0)
+
+    print("\nON DELETE CASCADE from artwork_ai_content to its sources")
+    await conn.execute(text("DELETE FROM artwork_ai_content WHERE id = :id"), {"id": row_id})
+    result = await conn.execute(
+        text("SELECT COUNT(*) FROM artwork_content_sources WHERE content_id = :id"), {"id": row_id}
+    )
     check("sources removed with their parent row", result.scalar() == 0)
 
 

@@ -17,6 +17,12 @@ class Base(DeclarativeBase):
     pass
 
 
+# An unreachable database must fail fast: the per-block endpoints treat it as a
+# missing block and go on to generate, inside RNF-002's 60s window. Unbounded,
+# the driver waited ~21s on an unreachable host (doc 06, §8).
+DB_CONNECT_TIMEOUT_SECONDS = 3
+DB_QUERY_TIMEOUT_SECONDS = 5
+
 _engine = None
 _session_factory = None
 
@@ -24,7 +30,12 @@ _session_factory = None
 def get_engine():
     global _engine
     if _engine is None:
-        _engine = create_async_engine(get_settings().database_url, echo=False, pool_pre_ping=True)
+        _engine = create_async_engine(
+            get_settings().database_url,
+            echo=False,
+            pool_pre_ping=True,
+            connect_args={"timeout": DB_CONNECT_TIMEOUT_SECONDS, "command_timeout": DB_QUERY_TIMEOUT_SECONDS},
+        )
     return _engine
 
 

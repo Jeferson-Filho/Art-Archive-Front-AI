@@ -18,14 +18,16 @@ import sys
 
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.config import get_settings
+from app.db.base import get_session
 from app.integrations import harvard
 from app.main import app
 
 PERSISTED = -100  # historical_context persisted with two sources; comparative_analysis missing
 EXPIRED = -200  # historical_context persisted but soft-deleted: must read as missing
+RETIRED_AND_ACTIVE = -300  # a retired row beside a fresh active one (doc 05 §6, Decision 12)
 EXISTING = 299843  # exists in Harvard, nothing persisted
 MISSING = 404404  # does not exist in Harvard
 HARVARD_DOWN = 502502  # Harvard fails while checking it
@@ -58,23 +60,52 @@ async def run_sql(*statements: str) -> None:
     await engine.dispose()
 
 
+SEEDED = f"({PERSISTED}, {EXPIRED}, {RETIRED_AND_ACTIVE})"
+
+
+def insert_row(artwork_id: int, historical: str, expired: bool = False) -> str:
+    return (
+        "INSERT INTO artwork_ai_content (artwork_id, historical_context, historical_context_prompt_version, "
+        f"historical_context_generated_at, expired_at) "
+        f"VALUES ({artwork_id}, '{historical}', 'v1', now(), {'now()' if expired else 'NULL'})"
+    )
+
+
+def insert_sources(artwork_id: int, *urls: str, of_retired: bool = False) -> str:
+    # Sources attach to a specific row through content_id (doc 05 §6, Decision 12)
+    row = f"(SELECT id FROM artwork_ai_content WHERE artwork_id = {artwork_id} AND expired_at IS {'NOT ' if of_retired else ''}NULL)"
+    values = ", ".join(
+        f"({row}, 'historical_context', '{url}', now() - interval '{len(urls) - i} minute')" for i, url in enumerate(urls)
+    )
+    return f"INSERT INTO artwork_content_sources (content_id, block_type, url, created_at) VALUES {values}"
+
+
 def seed() -> None:
     asyncio.run(
         run_sql(
-            f"DELETE FROM artwork_ai_content WHERE artwork_id IN ({PERSISTED}, {EXPIRED})",
-            "INSERT INTO artwork_ai_content (artwork_id, historical_context, historical_context_prompt_version, "
-            f"historical_context_generated_at) VALUES ({PERSISTED}, 'Persisted context.', 'v1', now())",
-            "INSERT INTO artwork_content_sources (artwork_id, block_type, url, created_at) VALUES "
-            f"({PERSISTED}, 'historical_context', 'https://example.org/a', now() - interval '1 minute'), "
-            f"({PERSISTED}, 'historical_context', 'https://example.org/b', now())",
-            "INSERT INTO artwork_ai_content (artwork_id, historical_context, historical_context_prompt_version, "
-            f"historical_context_generated_at, expired_at) VALUES ({EXPIRED}, 'Retired.', 'v1', now(), now())",
+            f"DELETE FROM artwork_ai_content WHERE artwork_id IN {SEEDED}",
+            insert_row(PERSISTED, "Persisted context."),
+            insert_sources(PERSISTED, "https://example.org/a", "https://example.org/b"),
+            insert_row(EXPIRED, "Retired.", expired=True),
+            insert_row(RETIRED_AND_ACTIVE, "Old text.", expired=True),
+            insert_sources(RETIRED_AND_ACTIVE, "https://example.org/old", of_retired=True),
+            insert_row(RETIRED_AND_ACTIVE, "Current text."),
+            insert_sources(RETIRED_AND_ACTIVE, "https://example.org/current"),
         )
     )
 
 
 def cleanup() -> None:
-    asyncio.run(run_sql(f"DELETE FROM artwork_ai_content WHERE artwork_id IN ({PERSISTED}, {EXPIRED})"))
+    asyncio.run(run_sql(f"DELETE FROM artwork_ai_content WHERE artwork_id IN {SEEDED}"))
+
+
+async def unreadable_session():
+    """A session on a closed port: the driver raises its real connection errors,
+    which are what the persistence module must recognise (doc 06, §11 item 2)."""
+    engine = create_async_engine("postgresql+asyncpg://nobody:nothing@127.0.0.1:1/none", connect_args={"timeout": 3})
+    async with async_sessionmaker(engine)() as session:
+        yield session
+    await engine.dispose()
 
 
 def assert_envelope(name: str, response, status: int, code: str) -> None:
@@ -127,6 +158,35 @@ def run(client: TestClient) -> None:
     r = client.get(f"/artworks/{EXPIRED}/historical-context")
     check("expired content is not returned", r.status_code == 200 and r.json()["historical_context"] == "")
     check("treated as missing, so Harvard is checked", harvard_calls == [EXPIRED], f"calls: {harvard_calls}")
+
+    print("\nRetired row beside an active one (doc 05 §6, Decision 12)")
+    harvard_calls.clear()
+    r = client.get(f"/artworks/{RETIRED_AND_ACTIVE}/historical-context")
+    body = r.json()
+    check("the active row's text is served", r.status_code == 200 and body["historical_context"] == "Current text.")
+    check(
+        "only the active row's sources, never the retired row's",
+        body["historical_context_sources"] == ["https://example.org/current"],
+        f"got {body['historical_context_sources']}",
+    )
+    check("Harvard never consulted", harvard_calls == [], f"calls: {harvard_calls}")
+
+    print("\nDatabase unreadable — treated as a missing block (doc 06 §11 item 2)")
+    app.dependency_overrides[get_session] = unreadable_session
+    try:
+        for block in ("historical-context", "comparative-analysis"):
+            harvard_calls.clear()
+            r = client.get(f"/artworks/{EXISTING}/{block}")
+            check(f"{block}: 200, not 500", r.status_code == 200, f"got {r.status_code} {r.text}")
+            check(f"{block}: proceeds to the existence check", harvard_calls == [EXISTING], f"calls: {harvard_calls}")
+        assert_envelope(
+            "nonexistent artwork still 404 while the database is down",
+            client.get(f"/artworks/{MISSING}/historical-context"),
+            404,
+            "ARTWORK_NOT_FOUND",
+        )
+    finally:
+        app.dependency_overrides.pop(get_session, None)
 
     print("\nError catalog (doc 07 §6) — standard envelope")
     for block in ("historical-context", "comparative-analysis"):
