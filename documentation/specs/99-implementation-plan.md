@@ -52,7 +52,7 @@ Doc 00 (§3.6) requires every technical decision not foreseen in a specification
 | - | -------- | --------- |
 | 1 | The new backend lives in a new top-level `backend/` directory, not by replacing the contents of `proxy/` | Matches the paths doc 11 (§4) already assumes for prompt storage (`backend/app/prompts/historical_context/v1.py`). Keeps the old proxy readable side by side during the parity validation of Phase 1, which doc 00 (§2.4) requires. "Proxy" also describes poorly a service that owns AI generation, persistence, and authentication. |
 | 2 | **FastAPI** as the web framework, with SQLAlchemy 2.x (async) and Alembic | Doc 04 (§9, Decision 1) names FastAPI as an example rather than a mandate; this fixes it. Native `async` matters because every generation handler awaits a long external call (RNF-002, 60s), and native JSON-Schema-shaped response models align with the structured-output contract of doc 09 (§5). Doc 05 (§7) already commits to Alembic. |
-| 3 | `proxy/` is **kept in the repository** as historical reference, but is removed from `docker-compose.yml` and stops being executed once Phase 1's parity validation passes | **Amends doc 04 (§1 and §9, Decision 1)**, which state Flask is discontinued at the end of the migration. The author's intent is to preserve the code for reference, not to run two Python services. The architectural guarantee doc 04 cares about — no two coexisting Python services — is preserved, since the retained directory is inert. Doc 04 must be updated to record this amendment (Phase 0). |
+| 3 | ~~`proxy/` is kept in the repository as historical reference~~ — **superseded 2026-10-27:** `proxy/` is deleted once parity is validated | The original decision would have amended doc 04 (§1 and §9, Decision 1). The author decided instead to remove the directory after the parity gate passed, which **restores doc 04's original text** — "Flask is discontinued at the end of the migration" — so no amendment to doc 04 is needed. The code remains recoverable from git history. |
 | 4 | Backend service port: **8000** (FastAPI default), replacing Flask's 5000 | Doc 04 (§8) leaves the port "to be defined". Changing the number makes it impossible to accidentally hit the old Flask service during the parity window. `NEXT_PUBLIC_API_URL` is updated accordingly. |
 | 5 | `GENERATION_TIMEOUT_SECONDS = 60`, read from the environment with that default | The value is fixed by RNF-002; making it configurable allows shortening it in tests without a code change. Doc 06 (§7) already references the constant by this name. |
 | 6 | The front-end gets a **second Axios instance** for AI endpoints, with a 60s timeout | `src/libs/axios/axios.ts` hardcodes `timeout: 10000`. A 10s client timeout would abort every first-visit generation long before the backend's 60s budget (RNF-002) elapses, making the Insight Card appear to fail on essentially every uncached artwork. The MVP instance keeps its 10s timeout for Harvard proxy calls. |
@@ -63,7 +63,7 @@ Doc 00 (§3.6) requires every technical decision not foreseen in a specification
 | Document | Correction | Reason |
 | -------- | ---------- | ------ |
 | doc 02.1, RF-001 | Scenario 001.1 states "the back-end waits for both responses for persistence". Replace with per-block independent persistence. | Contradicts docs 04 (§7.1), 06 (§5), and 07 (§4) v2.1, which establish three independent requests with no backend aggregation. Those documents are more specific and win under doc 00 (§5.1), but RF-001 is the *source* requirement — leaving it stale means the code contradicts a requirement on its face. |
-| doc 04 | Record the Decision 3 amendment above (§1 and §9, Decision 1). | A retained `proxy/` directory contradicts the text as written. |
+| ~~doc 04~~ | ~~Record the Decision 3 amendment~~ — **no longer required (2026-10-27):** `proxy/` was removed, so doc 04's original text stands unchanged. | — |
 | doc 04 §8 | Record the backend port as 8000 (Decision 4). | Currently "to be defined". |
 | doc 07 §8 | The closing line reads "resolve items 1 and 3" but the list contains only item 1. | Items 2 and 3 were resolved in doc 05 v2.1 (`password_reset_tokens` added) and the Alt Text endpoint split, and the list was trimmed without updating the closing line. |
 | doc 02.4 | Remove the closing "Flag for confirmation" note. | It warns that docs 05 and 07 still describe Google OAuth. Both were corrected in their v2.1 revisions; the warning is now false. |
@@ -118,7 +118,7 @@ Doc 00 forbids starting a phase whose source specification does not exist, and r
 
 - [ ] `99-implementation-plan.md` exists and is approved by the author
 - [ ] RF-001 scenario 001.1 no longer contradicts docs 04/06/07
-- [ ] Doc 04 records the retained-`proxy/` amendment and the port
+- [x] ~~Doc 04 records the retained-`proxy/` amendment~~ — dropped: `proxy/` removed instead, doc 04 needs no change. The port (8000) is still to be recorded in doc 04 §8
 - [ ] Docs 07 §8 and 02.4 no longer carry stale notes
 - [ ] Doc 00 §7 lists the deferrals and the email-transport deviation
 - [ ] Doc 01 §9 index gains a row for this document
@@ -181,7 +181,13 @@ Validated against the real Harvard Art Museums API, with the front-end pointed a
 
 Verified with headless Chrome rather than `curl`, since both pages are `"use client"` and fetch their data after hydration — a raw HTTP response contains only the loading skeleton.
 
-**Not yet validated:** filter sections (the side menu mounts only when opened) and infinite scroll. Both exercise the same `GET /proxy/object` path already confirmed working, but neither was driven interactively.
+**Filter endpoints**, covered in a second pass (2026-10-27): all nine the side menu consumes — `century`, `classification`, `color`, `culture`, `medium`, `period`, `place`, `technique`, `worktype` — return `200` with populated records through the new service. Combined with the ten endpoints compared byte-for-byte against the old Flask proxy, nineteen distinct endpoints are verified.
+
+**Still not driven interactively:** infinite scroll, and the filter menu's own open/apply interaction. Both exercise request paths already confirmed above.
+
+#### Flask proxy removed (2026-10-27)
+
+With parity validated, `proxy/` was deleted from the repository — eight files, including three standalone scraping scripts referenced nowhere in the codebase. This supersedes Decision 3 (§3) and restores doc 04's original §1/§9 text, under which Flask is discontinued at the end of the migration. The code stays recoverable from git history.
 
 ---
 
