@@ -201,12 +201,30 @@ All five tables are created, including the three user-domain tables that Phase 7
 
 **Acceptance criteria**
 
-- [ ] `docker-compose.yml` runs a `postgres` service with a named volume for persistence
-- [ ] `alembic upgrade head` on an empty database produces exactly the schema in doc 05 (§4)
-- [ ] `alembic downgrade base` reverses it cleanly
-- [ ] Every index and `CHECK` constraint named in doc 05 (§4) exists with that name
-- [ ] The connection string is read from the environment, never hardcoded (RNF-005)
-- [ ] A row with only `historical_context` filled, both other content columns `NULL`, inserts successfully — the partial state RF-004 scenario 3 requires
+- [x] `docker-compose.yml` runs a `postgres` service with a named volume for persistence
+- [x] `alembic upgrade head` on an empty database produces exactly the schema in doc 05 (§4)
+- [x] `alembic downgrade base` reverses it cleanly
+- [x] Every index and `CHECK` constraint named in doc 05 (§4) exists with that name
+- [x] The connection string is read from the environment, never hardcoded (RNF-005)
+- [x] A row with only `historical_context` filled, both other content columns `NULL`, inserts successfully — the partial state RF-004 scenario 3 requires
+
+#### Result (2026-10-27)
+
+Run against **PostgreSQL 18.6, installed natively on the development machine** rather than through Docker — the service was already present and running on `localhost:5432`, so the container was never needed locally. The `db` service is still defined in `docker-compose.yml`, with a named volume, so the stack remains reproducible elsewhere.
+
+| Check | Result |
+| ----- | ------ |
+| `alembic upgrade head` → `downgrade base` → `upgrade head` | Clean round trip; schema identical afterwards (5 tables, 7 indexes, 2 CHECKs) |
+| `alembic check` (models vs. migrated schema) | "No new upgrade operations detected" — no silent divergence |
+| Schema conformance, 25 assertions | All pass — `backend/tests/test_schema_doc05.py` |
+| Partial row, only `historical_context` (RF-004 scenario 3) | Accepted, other two blocks `NULL` |
+| Per-column first-writer-wins upsert (doc 06 §6) | Merges a second block into the same row; discards a second write to the same block |
+| `chk_artwork_ai_content_has_block` / `chk_sources_block_type` | Both reject their invalid rows |
+| `ON DELETE CASCADE` on `artwork_content_sources` | Sources removed with their parent |
+
+The upsert check matters beyond this phase: it is the exact concurrency mechanism Phases 4 and 5 depend on (doc 06, §6), verified before any pipeline code exists.
+
+**Database provisioning**, done once outside the migrations: database `art_archive`, role `art_archive_user` (login, **not** superuser), `GRANT CONNECT` plus `USAGE, CREATE ON SCHEMA public` — required since PostgreSQL 15 stopped making `public` writable by default, without which Alembic fails — and `CREATE EXTENSION pgcrypto`, which needs superuser and therefore cannot live in a migration run by the application role. Migration `0001` still issues `CREATE EXTENSION IF NOT EXISTS pgcrypto`, a no-op when already provisioned, so a superuser-run deployment works unchanged.
 
 ---
 
@@ -447,7 +465,7 @@ Doc 00 (§3.4) requires this checklist to be kept current as implementation prog
 | ----- | -------- | ------ |
 | 0 | Specification alignment | 🚧 In progress — doc 04 amendment pending author confirmation |
 | 1 | Backend service + Harvard proxy + parity validation | ✅ Done (2026-10-17) |
-| 2 | Database + migrations | ⬜ Not started |
+| 2 | Database + migrations | ✅ Done (2026-10-27) |
 | 3 | REST skeleton + error catalog | ⬜ Not started |
 | 4 | Historical context: pipeline + persistence | ⬜ Not started |
 | 5 | Comparative analysis: pipeline + persistence | ⬜ Not started |
