@@ -1,6 +1,6 @@
 # Persistence Flow Diagram — Art Archive AI
 
-**Version:** 2.2
+**Version:** 2.3
 **Date:** 2026-10-27
 **Status:** In review
 **Base documents:** [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md)
@@ -26,6 +26,8 @@ It also covers a scenario not detailed at the architecture level: **two simultan
 > **Change Note (2026-07-26, v2.1):** the historical-context and comparative-analysis blocks are no longer served by a single bundled "Insight Card" backend flow. Each is now its own independent flow, behind its own dedicated HTTP request (doc 07, §4) — mirroring how Alt Text already worked. The single combined loading/displayed/error state the Insight Card UI shows (RF-001, RF-005, RF-006, RF-007) is still produced, but now by the **front-end**, which fires both requests in parallel and combines their two independent responses — this logic is now formalized in the new Section 5. All subsequent sections have been renumbered accordingly (former §4–§8 are now §6–§10).
 >
 > **Change Note (2026-10-27, v2.2):** Sections 2 and 3 now model the artwork existence check that runs between "block missing" and generation: `404 ARTWORK_NOT_FOUND` when the artwork is absent from Harvard, `502 HARVARD_API_ERROR` when Harvard fails during the check. The `404` was specified in doc 07 (§4) but never drawn here — the pending issue doc 07 (§8) carried; the `502` is an author decision of the same date (doc 07, §6.1). Section 7's pseudocode and Section 9's edge cases are updated to match, and a new Section 11 records two pending issues found while implementing doc 99 Phase 3.
+>
+> **Change Note (2026-10-27, v2.3):** both Section 11 pending issues resolved by author decision. (1) Section 6's upsert targets the partial unique index introduced by doc 05 v2.2 (`ON CONFLICT (artwork_id) WHERE expired_at IS NULL`), so a retired row no longer blocks re-persistence; it also returns the written row's `id`, and a block's sources are inserted under it only when the write wins. (2) An unreadable database is treated as "block missing" — generation proceeds, nothing is persisted — in Sections 2, 3, 7 and 9, with bounded connection and query timeouts recorded in Section 8.
 
 ---
 
@@ -41,7 +43,7 @@ flowchart TD
     HExists -- "Yes (RF-001)" --> HFromDB["Return persisted historical_context + its sources"]
     HFromDB --> HEndCached(["End — response within 500ms (RNF-001)"])
 
-    HExists -- No --> HHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
+    HExists -- "No, or database unreadable" --> HHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
     HHarvard --> HArtwork{"Artwork exists?"}
     HArtwork -- "No" --> HNotFound["Return 404 ARTWORK_NOT_FOUND"]
     HNotFound --> HEndNotFound(["End — nothing generated"])
@@ -51,7 +53,7 @@ flowchart TD
     HArtwork -- Yes --> HTrigger["Trigger generate_historical_context()<br/>(doc 09)"]
     HTrigger --> HResult{"Result"}
 
-    HResult -- "Non-empty text (within 60s)" --> HPersist["Upsert historical_context<br/>(Section 6)"]
+    HResult -- "Non-empty text (within 60s)" --> HPersist["Upsert historical_context (Section 6)<br/>— skipped if the database was unreadable"]
     HPersist --> HReturnGenerated["Return 200 with generated<br/>historical_context + sources"]
     HReturnGenerated --> HEndSuccess(["End — historical_context persisted (RF-004)"])
 
@@ -70,6 +72,7 @@ flowchart TD
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
 | Query `artwork_ai_content.historical_context`      | First action taken upon receiving the request — no AI call occurs before this check                                                       | RF-001                                      |
 | `historical_context` already persisted?            | Checked independently of `comparative_analysis` — this request never looks at, or waits on, the other column                              | RF-001                                      |
+| Database unreadable                                | The check itself fails (connection refused or timed out, query error). Treated as "block missing": the flow continues to generation, and the upsert at the end is skipped — nothing is persisted. Keeps the Insight Card working through an outage, at the cost of an LLM call on every visit while it lasts (author decision, 2026-10-27; Section 11) | RNF-008                                     |
 | Fetch the artwork from Harvard                     | Only reached when the column is missing, so a persisted block never pays for a Harvard round trip. Confirms the artwork exists and supplies the metadata the pipeline needs (doc 09, §3) | RF-001, RNF-001                             |
 | Artwork exists? — No                               | `404 ARTWORK_NOT_FOUND`, before any pipeline call. Harvard signals absence with HTTP `200` and `{"error": "Not found"}`, so it is read from the body (doc 07, §4) | doc 07 §4                                   |
 | Artwork exists? — Harvard failed                   | Harvard unreachable, timed out, or answered with an error: `502 HARVARD_API_ERROR`, nothing generated (author decision, 2026-10-27)      | doc 07 §6.1                                 |
@@ -93,7 +96,7 @@ flowchart TD
     CExists -- "Yes (RF-001)" --> CFromDB["Return persisted comparative_analysis + its sources"]
     CFromDB --> CEndCached(["End — response within 500ms (RNF-001)"])
 
-    CExists -- No --> CHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
+    CExists -- "No, or database unreadable" --> CHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
     CHarvard --> CArtwork{"Artwork exists?"}
     CArtwork -- "No" --> CNotFound["Return 404 ARTWORK_NOT_FOUND"]
     CNotFound --> CEndNotFound(["End — nothing generated"])
@@ -103,7 +106,7 @@ flowchart TD
     CArtwork -- Yes --> CTrigger["Trigger generate_comparative_analysis()<br/>(doc 09)"]
     CTrigger --> CResult{"Result"}
 
-    CResult -- "Non-empty text (within 60s)" --> CPersist["Upsert comparative_analysis<br/>(Section 6)"]
+    CResult -- "Non-empty text (within 60s)" --> CPersist["Upsert comparative_analysis (Section 6)<br/>— skipped if the database was unreadable"]
     CPersist --> CReturnGenerated["Return 200 with generated<br/>comparative_analysis + sources"]
     CReturnGenerated --> CEndSuccess(["End — comparative_analysis persisted (RF-004)"])
 
@@ -122,6 +125,7 @@ Mirrors Section 2 in every respect, calling `generate_comparative_analysis()` in
 | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
 | Query `artwork_ai_content.comparative_analysis`    | First action taken upon receiving the request — no AI call occurs before this check                                                         | RF-001                                        |
 | `comparative_analysis` already persisted?          | Checked independently of `historical_context` — this request never looks at, or waits on, the other column                                  | RF-001                                        |
+| Database unreadable                                | Identical to Section 2.2: treated as "block missing", generation proceeds, nothing is persisted                                              | RNF-008                                       |
 | Fetch the artwork from Harvard / Artwork exists?   | Identical to Section 2.2: `404 ARTWORK_NOT_FOUND` when absent, `502 HARVARD_API_ERROR` when Harvard fails, both before any pipeline call      | RF-001, doc 07 §4, §6.1                       |
 | Trigger `generate_comparative_analysis()`          | Only called if the column is missing and the artwork exists                                                                                 | RF-001, RF-003, RF-009                        |
 | Result: non-empty text                             | Happy path — content is persisted (Section 6) and returned as part of a `200`                                                               | RF-003 (scenario 1), RF-004                   |
@@ -210,15 +214,20 @@ INSERT INTO artwork_ai_content (
     historical_context_generated_at, created_at, updated_at
 )
 VALUES (:artwork_id, :text, :prompt_version, now(), now(), now())
-ON CONFLICT (artwork_id) DO UPDATE SET
+ON CONFLICT (artwork_id) WHERE expired_at IS NULL DO UPDATE SET
     historical_context                 = EXCLUDED.historical_context,
     historical_context_prompt_version  = EXCLUDED.historical_context_prompt_version,
     historical_context_generated_at    = EXCLUDED.historical_context_generated_at,
     updated_at                         = now()
-WHERE artwork_ai_content.historical_context IS NULL;
+WHERE artwork_ai_content.historical_context IS NULL
+RETURNING id;
 ```
 
 The same pattern applies independently to `comparative_analysis` and `alt_text`, each in its own upsert statement, each guarded by its own column's `IS NULL` check.
+
+**Conflict target (doc 05 v2.2, Decision 12).** `artwork_id` is unique only among active rows, through the partial index `ux_artwork_ai_content_active_artwork_id`. The `WHERE expired_at IS NULL` after `ON CONFLICT (artwork_id)` is what lets PostgreSQL infer that partial index — without it the statement is rejected, since no plain unique constraint on `artwork_id` exists. A retired row therefore never conflicts: if an artwork's only rows are retired, the `INSERT` creates a fresh active row beside them, and the retired rows stay untouched.
+
+**Sources follow the winning write.** `RETURNING id` yields the id of the row written, and yields nothing when the `WHERE` clause skips the update — that is, when another request already persisted this block. The block's sources are inserted into `artwork_content_sources` under that `content_id` **only when a row is returned**, so a losing concurrent request never attaches its sources to the winner's text.
 
 - The first request to finish generating a given block persists it normally (the `WHERE` condition is true).
 - A second, concurrent request that finishes generating **the same block** afterward has its `UPDATE` silently skipped by the `WHERE` clause (the column is no longer `NULL`) — but the second request still returns its own freshly generated content to its own caller; only the persisted copy is discarded.
@@ -234,7 +243,11 @@ Each function below backs exactly one HTTP request handler (doc 07, §4) — the
 
 ```python
 async def get_or_generate_historical_context(artwork_id: int) -> TextBlockResponse:
-    row = await db.get_artwork_ai_content(artwork_id)
+    try:
+        row = await db.get_active_artwork_ai_content(artwork_id)  # WHERE expired_at IS NULL
+        database_readable = True
+    except DatabaseUnavailableError:  # connection refused/timed out, query failed — see Section 11
+        row, database_readable = None, False  # treated as "block missing"
     if row and row.historical_context is not None:
         return TextBlockResponse.from_db(row.historical_context, sources=row.historical_context_sources)
 
@@ -253,7 +266,8 @@ async def get_or_generate_historical_context(artwork_id: int) -> TextBlockRespon
     if result.text == "":
         return TextBlockResponse.empty()  # RF-002 scenario 3 / RF-010 scenario 10.2 — not persisted
 
-    await upsert_if_null(artwork_id, "historical_context", result)  # Section 6
+    if database_readable:  # an unreadable database is not written to either (Section 11)
+        await upsert_if_null(artwork_id, "historical_context", result)  # Section 6
     return TextBlockResponse.generated(result.text, result.sources)
 
 
@@ -292,6 +306,9 @@ async def get_or_generate_alt_text(artwork_id: int) -> str:
 | The two Insight Card requests, when the front-end fires them together and both must generate | Bounded by the two concurrent 60s calls running in parallel (Sections 2–3) — not their sum, since the front-end waits on both independently (Section 5) | RNF-002         |
 | Insight Card combined error state reaching the timeout-specific message                      | Only reached if **both** underlying requests independently return `504 GENERATION_TIMEOUT` (Section 5)                                                  | RNF-002, RF-007 |
 | Alt Text request, when generation is triggered                                               | Up to 60s, independent of the two Insight Card requests happening for the same artwork visit                                                            | RNF-002, RF-013 |
+| Initial database check, when the database is unreachable                                     | Up to **3s** to open a connection and **5s** for a query, before the database is declared unreadable and the block treated as missing (Section 11)      | RNF-008         |
+
+**Why the database timeouts are bounded (2026-10-27).** Measured on the development machine, an unreachable database host made the driver wait about **21s** before failing, with no limit configured — a third of RNF-002's window spent before generation even starts. With a 3s connection timeout the same failure surfaces in 3s; a refused connection fails in about 2s either way. The 5s query timeout covers a database that accepts the connection but stops answering. Both are set on the engine (`backend/app/db/base.py`), so they apply to every query, not only the initial check.
 
 RNF-002 frames historical context, comparative analysis, and Alt Text as sharing "a single 60-second window... counted from when generation is triggered": in practice, this is the budget each of up to three independently-fired, concurrently-triggered requests receives when a visitor loads an artwork's detail page (RF-012). The three calls do not block or extend one another — RNF-002's guarantee is only that partial success (any one of the three returning in time) is used normally, and that the platform is only considered to have hit the overall generation timeout if **none** of the triggered calls returned within that window.
 
@@ -310,6 +327,7 @@ RNF-002 frames historical context, comparative analysis, and Alt Text as sharing
 | Both Insight Card requests time out (504)                                | The front-end (Section 5) sees two 504s — timeout-specific error message (RF-007, scenario 3); the artwork's title, image, and metadata remain visible and functional                                                         | RF-006, RF-007, RNF-002                  |
 | Both Insight Card requests come back with no content, but not both 504   | Standard "was not possible to generate" message (RF-007, scenario 2), decided front-end-side (Section 5) — same message as the "both genuinely empty" case (RF-005, scenario 3)                                               | RF-005, RF-007                           |
 | `artwork_id` does not exist in the Harvard API                           | `404 ARTWORK_NOT_FOUND` from the existence check (Sections 2–3), before any pipeline call. Never reached for an artwork whose block is already persisted                                                                     | doc 07 §4                                |
+| Database unreadable during the initial check                             | Treated as "block missing": generation proceeds and its content is returned normally, but the upsert is skipped, so nothing is persisted — the next visit generates again, until the database is back. Front-end-side nothing distinguishes this from a first visit | RNF-008, Section 11                      |
 | Harvard fails during the existence check                                 | `502 HARVARD_API_ERROR`, nothing generated or persisted. Front-end-side (Section 5) it counts as a response without content that is not a timeout                                                                             | doc 07 §6.1                              |
 
 ---
@@ -336,10 +354,16 @@ RNF-002 frames historical context, comparative analysis, and Alt Text as sharing
 
 ## 11. Identified Pending Issues
 
-1. **A soft-deleted row blocks its artwork from ever being persisted again.** Reads filter on `expired_at IS NULL` (doc 05, §8), so once an artwork's row is expired, every block reads as missing and is regenerated. But the upsert of Section 6 conflicts on `artwork_id` — still the primary key of that same expired row — and only writes when the target column `IS NULL`:
+No open pending issues. Both items below were resolved by author decision on 2026-10-27; they are kept for the record of why the flow looks the way it does.
+
+1. **RESOLVED — option (a), surrogate key.** Applied in doc 05 v2.2 (Decision 12, migration `0006`) and in Section 6's conflict target. A retired row is now preserved and a fresh active row created beside it.
+
+   _Original analysis:_ **A soft-deleted row blocks its artwork from ever being persisted again.** Reads filter on `expired_at IS NULL` (doc 05, §8), so once an artwork's row is expired, every block reads as missing and is regenerated. But the upsert of Section 6 conflicts on `artwork_id` — still the primary key of that same expired row — and only writes when the target column `IS NULL`:
    - for a block the expired row **still holds**, the `WHERE` clause is false, so nothing is persisted and the artwork is regenerated on **every** visit, paying the LLM each time and never meeting RNF-001 again;
    - for a block the expired row **lacks**, the new content is written **into the expired row**, where every read ignores it.
 
    _Why it matters:_ the soft-delete policy (doc 04 §9, Decision 6) and the per-column upsert were each designed correctly in isolation, but together they cannot "un-retire" an artwork. _Urgency:_ low for this cycle — nothing in scope sets `expired_at` on `artwork_ai_content` (the administrative panel and its regenerate endpoint are deferred, doc 99 §2.2), so no row can reach this state yet. _Suggested solutions:_ (a) a surrogate primary key on `artwork_ai_content`, with a partial unique index on `artwork_id WHERE expired_at IS NULL`, so a retired row is preserved and a fresh active row is created beside it — a structural change to doc 05 (§6, Decision 1); or (b) when the conflicting row is expired, reset it to active, clearing its blocks — simpler, but it discards exactly the history the soft-delete policy exists to keep.
 
-2. **A database read failure is not specified.** RF-004 scenario 2 covers a *write* failure after generation; nothing covers the database being unavailable for the initial check. _Current behaviour (provisional):_ the request fails with `500 INTERNAL_ERROR` through the generic handler (doc 07, §6.1), which the front-end's aggregation (Section 5) treats as a response without content. _Alternative:_ treat an unreadable database as "block missing" and proceed to generation — keeps the Insight Card working during an outage, at the cost of an LLM call on every visit for as long as it lasts, with nothing persisted.
+2. **RESOLVED — treat an unreadable database as "block missing".** Applied in Sections 2, 3, 7, 8 and 9: generation proceeds, its content is returned, and the upsert is skipped. "Unreadable" means the initial check fails for any database reason — refused or timed-out connection, rejected credentials, failed query — but not a bug elsewhere in the request. Because the driver raises connection failures **unwrapped** (`OSError`, `TimeoutError`, asyncpg's own errors) rather than as SQLAlchemy errors, the check catches all of those families explicitly; catching SQLAlchemy errors alone would have let an outage through as a `500`. The connection and query timeouts that keep this inside RNF-002's window are recorded in Section 8.
+
+   _Original analysis:_ **A database read failure is not specified.** RF-004 scenario 2 covers a *write* failure after generation; nothing covers the database being unavailable for the initial check. _Current behaviour (provisional):_ the request fails with `500 INTERNAL_ERROR` through the generic handler (doc 07, §6.1), which the front-end's aggregation (Section 5) treats as a response without content. _Alternative:_ treat an unreadable database as "block missing" and proceed to generation — keeps the Insight Card working during an outage, at the cost of an LLM call on every visit for as long as it lasts, with nothing persisted.

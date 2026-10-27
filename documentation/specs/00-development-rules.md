@@ -88,8 +88,6 @@ Convenience list pointing to pending issues already identified during the drafti
 | ---------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Alt Text when the image is inaccessible        | doc 03 (§5), doc 06 (§7), doc 09 (§10) | Today, if the artwork's image cannot be processed, no Alt Text is persisted and the user receives no warning. Recommendation: generate a default warning text instead of omitting the field |
 | Missing administrative privilege in the schema | doc 08 (§7)                            | `users` has no field to distinguish administrators from regular visitors, needed for the `/admin/*` endpoints. The administrative panel is deferred this cycle (doc 99, §2.2)              |
-| Expired row blocks re-persistence              | doc 06 (§11, item 1)                   | Once `artwork_ai_content` is soft-deleted, the per-column upsert can no longer persist that artwork again. No row can reach that state this cycle — nothing in scope sets `expired_at`   |
-| Database read failure unspecified              | doc 06 (§11, item 2)                   | No requirement covers the database being unreadable during the check-before-generating step. Provisionally a `500 INTERNAL_ERROR`                                                          |
 | Alt Text deferred out of this cycle            | doc 99 (§2.2)                          | RF-011/RF-012/RF-013 are not built this cycle. The image `alt` attribute keeps the MVP's generic title fallback, which RF-012 forbids. Accepted deviation, not an oversight                 |
 | ARIA/accessibility deferred out of this cycle  | doc 99 (§2.2)                          | RF-014 through RF-025 and RNF-004 are not built this cycle. Doc 01 (§7) success criterion 4 is consequently not met                                                                        |
 | Password reset email transport stubbed         | doc 99 (§3, Decision 7)                | Reset links are logged to the backend console rather than emailed. Deviates from RF-029 scenario 029.1; must be closed before any non-development deployment                               |
@@ -99,6 +97,8 @@ Convenience list pointing to pending issues already identified during the drafti
 > **Removed (2026-10-17):** _Missing password reset token storage_ (doc 07, §8 item 2) — formally resolved in doc 05 v2.1, which added the `password_reset_tokens` table backing `POST /auth/password-reset/confirm`.
 >
 > **Removed (2026-10-27):** _Artwork nonexistent in the Harvard API_ (doc 07, §8 item 1) — formally resolved in doc 06 v2.2, whose flowcharts now model the `404 ARTWORK_NOT_FOUND` node. The source pointer of _Missing administrative privilege_ was corrected from doc 07 §8 to doc 08 §7, the only document that still describes it.
+>
+> **Removed (2026-10-27):** _Expired row blocks re-persistence_ (doc 06, §11 item 1) — resolved by a surrogate primary key on `artwork_ai_content` with a partial unique index on active rows (doc 05 v2.2, Decision 12). _Database read failure unspecified_ (doc 06, §11 item 2) — resolved by treating an unreadable database as a missing block (doc 06 v2.3). Both by author decision.
 
 ---
 

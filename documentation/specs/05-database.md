@@ -1,7 +1,7 @@
 # Database — Art Archive AI
 
-**Version:** 2.1
-**Date:** 2026-07-26
+**Version:** 2.2
+**Date:** 2026-10-27
 **Status:** In review
 **Base documents:** [01 — Vision and Scope](./01-vision-scope.md), [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.4 — Authentication](./requeriments/02.4-authentication.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [04 — System Architecture](./04-architecture.md)
 
@@ -16,7 +16,9 @@
 >
 > The original 2026-07-03 change note is preserved below for history: PostgreSQL was created **from scratch** — no Firebase data (users, sessions, preferences) was migrated or preserved. Firebase Auth is fully discontinued. This eliminated the need for any column or table dedicated to mapping legacy Firebase records — the `saved_artworks` table and the `firebase_uid` column, present in an earlier draft, were removed (see Section 6).
 >
-> **Change Note (2026-07-26, v2.1):** the system-wide policy is that **no register is ever physically deleted**. A nullable `expired_at TIMESTAMPTZ` column is added to `users` and `artwork_ai_content` to model soft delete: `NULL` means the register is active, a timestamp means it was logically retired at that moment. `sessions` and `password_reset_tokens` are unaffected — their existing `revoked_at`/`used_at`/`expires_at` columns already model each record's own lifecycle (session/token validity), which is a distinct concept from soft-deleting the parent register. `artwork_content_sources` also gets no column of its own: its rows are scoped to a block on `artwork_ai_content` and are considered retired implicitly when their parent artwork's row is expired (see Decision 12, §6).
+> **Change Note (2026-07-26, v2.1):** the system-wide policy is that **no register is ever physically deleted**. A nullable `expired_at TIMESTAMPTZ` column is added to `users` and `artwork_ai_content` to model soft delete: `NULL` means the register is active, a timestamp means it was logically retired at that moment. `sessions` and `password_reset_tokens` are unaffected — their existing `revoked_at`/`used_at`/`expires_at` columns already model each record's own lifecycle (session/token validity), which is a distinct concept from soft-deleting the parent register. `artwork_content_sources` also gets no column of its own: its rows are scoped to a block on `artwork_ai_content` and are considered retired implicitly when their parent artwork's row is expired (see Decision 11, §6).
+>
+> **Change Note (2026-10-27, v2.2):** `artwork_ai_content` moves from `artwork_id` as its primary key to a **surrogate `id` (UUID)**, with a **partial unique index on `artwork_id WHERE expired_at IS NULL`**. Under v2.1, soft delete and the per-column upsert (doc 06, §6) could not coexist: once an artwork's row was expired, the upsert still conflicted on that same row — the only one `artwork_id` could ever name — so the artwork could never be persisted again, and was regenerated on every visit (the pending issue doc 06 §11 recorded). Now a retired row is preserved untouched and a fresh active row is created beside it; at most one row per artwork is active at a time. As a direct consequence, `artwork_content_sources` references its parent row through **`content_id`** instead of `artwork_id`, which is no longer unique: each source stays attached to the exact row it was generated for, so a retired row keeps its own sources. Decision 1 is superseded by Decision 12 (§6). Author decision; applied by migration `0006` (§7). The v2.1 note above and §8 cited a "Decision 12" for soft delete that is actually Decision 11 — corrected.
 
 The PostgreSQL introduced in this expansion has two purposes, both already delimited in doc 04 (§5):
 
@@ -64,7 +66,8 @@ erDiagram
     }
 
     ARTWORK_AI_CONTENT {
-        integer artwork_id PK "Harvard API object ID"
+        uuid id PK "surrogate key"
+        integer artwork_id "Harvard API object ID - unique among active rows"
         text historical_context "nullable - independent block"
         varchar historical_context_prompt_version
         timestamptz historical_context_generated_at
@@ -81,7 +84,7 @@ erDiagram
 
     ARTWORK_CONTENT_SOURCES {
         uuid id PK
-        integer artwork_id FK
+        uuid content_id FK "the exact artwork_ai_content row"
         varchar block_type "historical_context or comparative_analysis"
         text url
         timestamptz created_at
@@ -89,6 +92,8 @@ erDiagram
 ```
 
 **Note on `ARTWORK_AI_CONTENT`:** this entity has no foreign key to `USERS`. It is completely independent from the user domain — AI-generated content exists per artwork, not per user. Its three content columns are filled **independently and asynchronously** — none of them requires the others to be present (RF-001, RF-004).
+
+An artwork may have **several rows over time but at most one active row** (`expired_at IS NULL`), enforced by a partial unique index (§4). Retiring an artwork's content preserves its row; the next generation creates a fresh active row beside it (Decision 12, §6).
 
 ---
 
@@ -99,8 +104,8 @@ erDiagram
 | **users**                   | Stores registered accounts. Email/password is the sole credential type (RF-026) — no `google_id` or equivalent. Never physically deleted — retired accounts are soft-deleted via `expired_at`.                                                                                                                    |
 | **sessions**                | Controls active sessions issued by the backend, allowing immediate revocation on logout (RF-028).                                                                                                                                                                                                                 |
 | **password_reset_tokens**   | Single-use, expiring tokens backing the "Forgot Password" / "Change Password" flow (RF-029, RF-030).                                                                                                                                                                                                              |
-| **artwork_ai_content**      | Core of the on-demand persistence mechanism: one row per artwork with at least one successfully generated block. Each of the three content columns is generated, checked, and persisted independently (RF-001 through RF-004, RF-013). Never physically deleted — retired rows are soft-deleted via `expired_at`. |
-| **artwork_content_sources** | Zero or more sources per generated text block (historical context or comparative analysis), satisfying RF-010. Alt Text has no associated sources — doc 02.2 does not require any.                                                                                                                                |
+| **artwork_ai_content**      | Core of the on-demand persistence mechanism: at most one **active** row per artwork with at least one successfully generated block, plus any number of retired ones. Each of the three content columns is generated, checked, and persisted independently (RF-001 through RF-004, RF-013). Never physically deleted — retired rows are soft-deleted via `expired_at` and kept beside the active one. |
+| **artwork_content_sources** | Zero or more sources per generated text block (historical context or comparative analysis), satisfying RF-010, each attached to the exact `artwork_ai_content` row it was generated for. Alt Text has no associated sources — doc 02.2 does not require any.                                                   |
 
 ---
 
@@ -159,7 +164,8 @@ CREATE INDEX ix_password_reset_tokens_user_id ON password_reset_tokens (user_id)
 -- ARTWORK_AI_CONTENT
 -- ============================================================
 CREATE TABLE artwork_ai_content (
-    artwork_id                              INTEGER PRIMARY KEY,
+    id                                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    artwork_id                              INTEGER NOT NULL,
 
     historical_context                      TEXT,
     historical_context_prompt_version       VARCHAR(20),
@@ -181,12 +187,16 @@ CREATE TABLE artwork_ai_content (
         CHECK (historical_context IS NOT NULL OR comparative_analysis IS NOT NULL OR alt_text IS NOT NULL)
 );
 
+-- At most one active row per artwork; retired rows are unconstrained (Decision 12)
+CREATE UNIQUE INDEX ux_artwork_ai_content_active_artwork_id
+    ON artwork_ai_content (artwork_id) WHERE expired_at IS NULL;
+
 -- ============================================================
 -- ARTWORK_CONTENT_SOURCES
 -- ============================================================
 CREATE TABLE artwork_content_sources (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    artwork_id      INTEGER NOT NULL REFERENCES artwork_ai_content(artwork_id) ON DELETE CASCADE,
+    content_id      UUID NOT NULL REFERENCES artwork_ai_content(id) ON DELETE CASCADE,
     block_type      VARCHAR(30) NOT NULL,
     url             TEXT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -195,7 +205,7 @@ CREATE TABLE artwork_content_sources (
         CHECK (block_type IN ('historical_context', 'comparative_analysis'))
 );
 
-CREATE INDEX ix_sources_artwork_block ON artwork_content_sources (artwork_id, block_type);
+CREATE INDEX ix_sources_content_block ON artwork_content_sources (content_id, block_type);
 ```
 
 ---
@@ -240,7 +250,8 @@ CREATE INDEX ix_sources_artwork_block ON artwork_content_sources (artwork_id, bl
 
 | Column                                | Type         | Nullable? | Description                                                                                                                                                | Requirement                             |
 | ------------------------------------- | ------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------- |
-| `artwork_id`                          | INTEGER      | No (PK)   | ID of the artwork in the Harvard Art Museums API (`objectid`) — natural key                                                                                | RF-004                                  |
+| `id`                                  | UUID         | No (PK)   | Surrogate identifier of this row. Sources reference it, so each stays attached to the exact row it was generated for (Decision 12)                        | —                                       |
+| `artwork_id`                          | INTEGER      | No        | ID of the artwork in the Harvard Art Museums API (`objectid`) — the key every read uses. Unique among **active** rows only (`ux_artwork_ai_content_active_artwork_id`); retired rows may repeat it | RF-004                                  |
 | `historical_context`                  | TEXT         | Yes       | Historical context block. Null while not yet successfully generated — an empty-string result from the LLM (RF-002, scenario 3) is never written here       | RF-002                                  |
 | `historical_context_prompt_version`   | VARCHAR(20)  | Yes       | Prompt version that produced this block (null if the block itself is null)                                                                                 | RNF-006                                 |
 | `historical_context_generated_at`     | TIMESTAMPTZ  | Yes       | Moment this block was generated and persisted                                                                                                              | RF-004                                  |
@@ -259,7 +270,7 @@ CREATE INDEX ix_sources_artwork_block ON artwork_content_sources (artwork_id, bl
 | Column       | Type        | Nullable? | Description                                                                            | Requirement    |
 | ------------ | ----------- | --------- | -------------------------------------------------------------------------------------- | -------------- |
 | `id`         | UUID        | No        | Source record identifier                                                               | RF-010         |
-| `artwork_id` | INTEGER     | No        | Reference to `artwork_ai_content.artwork_id`                                           | RF-010         |
+| `content_id` | UUID        | No        | Reference to `artwork_ai_content.id` — the exact row (active or retired) this source belongs to | RF-010         |
 | `block_type` | VARCHAR(30) | No        | Which block this source supports: `historical_context` or `comparative_analysis`       | RF-010         |
 | `url`        | TEXT        | No        | The web page consulted by the LLM, considered relevant under the source-relevance rule | RF-010, RF-009 |
 | `created_at` | TIMESTAMPTZ | No        | Moment this source was recorded, alongside its block's generation                      | —              |
@@ -270,7 +281,7 @@ CREATE INDEX ix_sources_artwork_block ON artwork_content_sources (artwork_id, bl
 
 | #   | Decision                                                                                                                                 | Rationale                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | --- | ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | `artwork_id` (not an auto-increment `serial`) as the primary key of `artwork_ai_content`                                                 | RF-004 requires that "the record is created with the artwork's ID as the key"; every read (RF-001) is done by this ID — using it as the PK avoids an additional index and an unnecessary join                                                                                                                                                                                                                                                                                                                                                                            |
+| 1   | ~~`artwork_id` (not an auto-increment `serial`) as the primary key of `artwork_ai_content`~~ — **superseded by Decision 12 (2026-10-27)** | RF-004 requires that "the record is created with the artwork's ID as the key"; every read (RF-001) is done by this ID — using it as the PK avoids an additional index and an unnecessary join. It could not coexist with soft delete (Decision 11): see Decision 12                                                                                                                                                                                                                                                                                                       |
 | 2   | UUID as the primary key of `users`, `sessions`, and `password_reset_tokens`                                                              | Avoids exposing the volume/sequence of registrations in a public API                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | 3   | Dedicated `sessions` table, instead of stateless server-side JWT                                                                         | Preserves immediate session-revocation on logout (RF-028) — a stateless JWT cannot be invalidated before it expires                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 4   | `password_hash` is `NOT NULL`, with no alternate-credential column                                                                       | RF-026 establishes email/password as the sole authentication mechanism, with no third-party identity provider — there is no second credential type to make either column nullable for                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -281,6 +292,7 @@ CREATE INDEX ix_sources_artwork_block ON artwork_content_sources (artwork_id, bl
 | 9   | Dedicated `artwork_content_sources` table instead of a JSON/array column on `artwork_ai_content`                                         | RF-010 requires a variable number of sources per block (zero or more), each independently useful to query/display (RF-017, doc 02.3) — a relational child table keeps the per-source `url` queryable and lets `ON DELETE CASCADE` clean up sources if an artwork's content row is ever removed, without needing JSON-array manipulation logic in the application layer                                                                                                                                                                                                   |
 | 10  | `password_reset_tokens` as a dedicated table instead of columns on `users`                                                               | RF-029/RF-030 require a single-use, expiring, re-requestable token per reset attempt — a user could request multiple resets over time; a child table keeps history and lets `used_at` enforce single-use without overloading the `users` row                                                                                                                                                                                                                                                                                                                             |
 | 11  | Nullable `expired_at` on `users` and `artwork_ai_content` only, not on `sessions`, `password_reset_tokens`, or `artwork_content_sources` | System policy: no register is ever physically deleted (doc 04 §9, Decision 6). `sessions` and `password_reset_tokens` already carry their own lifecycle columns (`revoked_at`/`expires_at`, `used_at`/`expires_at`) for a different purpose (validity of that specific record, not soft-deleting the account); adding `expired_at` there would duplicate that meaning. `artwork_content_sources` rows are scoped to their parent `artwork_ai_content` row and are treated as retired implicitly whenever that parent row is expired, so no column of their own is needed |
+| 12  | Surrogate `id` (UUID) as the primary key of `artwork_ai_content`, with a partial unique index on `artwork_id WHERE expired_at IS NULL`; sources reference the row through `content_id` | Decisions 1 and 11 were sound in isolation but broke together: with `artwork_id` as the PK, an expired row was the only row the artwork could ever have, so the per-column upsert (doc 06, §6) kept conflicting with it and never persisted the artwork again — regenerating it, at LLM cost, on every visit. Here a retired row is preserved untouched and a fresh active row is created beside it, which keeps exactly the history the soft-delete policy exists to protect. The partial index still guarantees at most one active row per artwork, and serves every read with an index lookup. **On RF-004:** its scenario 004.1 reads "created with the artwork's ID as the key" — `artwork_id` remains the key every read and write uses, unique among active rows; it is simply no longer the *primary* key. Sources move to `content_id` because `artwork_id` is no longer unique: each source must stay attached to the exact row it was generated for, so a retired row keeps its own. Author decision, 2026-10-27 |
 
 ---
 
@@ -296,15 +308,19 @@ Migrations will be managed via **Alembic** (the migration tool associated with S
 
 This order respects foreign-key dependencies and allows the `artwork_ai_content`/`artwork_content_sources` schema (needed for the AI pipeline) to be validated in isolation, without waiting for the users schema.
 
+Subsequent revisions are applied as new migrations, never by rewriting one that has already run:
+
+6. `0006_surrogate_key_artwork_ai_content` — applies Decision 12: adds `artwork_ai_content.id` and makes it the primary key, replaces the `artwork_id` primary key with `ux_artwork_ai_content_active_artwork_id`, and moves `artwork_content_sources` from `artwork_id` to `content_id`, backfilled from the existing rows. Its downgrade is only possible while no artwork has more than one row — once a retired row and an active one coexist, `artwork_id` cannot become a primary key again.
+
 ---
 
 ## 8. Performance and Indexing Considerations
 
-- **RNF-001 (≤500ms per block, for already-persisted content):** lookups in `artwork_ai_content` are always by primary key (`artwork_id`), which already guarantees a B-tree index lookup with logarithmic cost. Because the three content columns live on the same row, checking "is this block already persisted?" for any of the three is a single indexed row fetch followed by a null check on the relevant column — no additional index is necessary for this data volume.
+- **RNF-001 (≤500ms per block, for already-persisted content):** lookups in `artwork_ai_content` are always by `artwork_id` among active rows, served by the partial unique index `ux_artwork_ai_content_active_artwork_id` — a B-tree index lookup with logarithmic cost, whose `WHERE expired_at IS NULL` predicate matches the one every read already applies. Because the three content columns live on the same row, checking "is this block already persisted?" for any of the three is a single indexed row fetch followed by a null check on the relevant column — no additional index is necessary for this data volume.
 - **RNF-003 (persistence reliability):** the absence of intermediate status columns (Decision 6) simplifies the guarantee that every non-null column value represents valid, complete content for that block, with no partial or inconsistent per-block states.
-- **Sources lookup:** `ix_sources_artwork_block` supports the common access pattern of "give me the sources for this artwork's historical-context block" without a sequential scan.
+- **Sources lookup:** `ix_sources_content_block` supports the common access pattern of "give me the sources for this row's historical-context block" without a sequential scan.
 - **Future scale:** sizing for hundreds of thousands of artworks, including eventual vector indexing for similarity search, is addressed separately in **doc 19 — Technical Feasibility Study (RAG/Embeddings)**, out of scope for this document.
-- **Soft delete and query filtering:** since no register is ever physically deleted (Decision 12), every read of "current" data on `users` (e.g. login) and `artwork_ai_content` (e.g. on-demand persistence checks) must add `WHERE expired_at IS NULL`. Both tables are small enough at this project's scale that no partial index on `expired_at IS NULL` is needed yet; this should be revisited alongside the future-scale study in doc 19 if the active/expired ratio grows large.
+- **Soft delete and query filtering:** since no register is ever physically deleted (Decision 11), every read of "current" data on `users` (e.g. login) and `artwork_ai_content` (e.g. on-demand persistence checks) must add `WHERE expired_at IS NULL`. On `artwork_ai_content` that predicate is already the one of its partial unique index (Decision 12). `users` is small enough at this project's scale that no partial index on `expired_at IS NULL` is needed yet; this should be revisited alongside the future-scale study in doc 19 if the active/expired ratio grows large.
 
 ---
 

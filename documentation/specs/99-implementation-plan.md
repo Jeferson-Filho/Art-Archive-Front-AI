@@ -227,6 +227,21 @@ The upsert check matters beyond this phase: it is the exact concurrency mechanis
 
 **Database provisioning**, done once outside the migrations: database `art_archive`, role `art_archive_user` (login, **not** superuser), `GRANT CONNECT` plus `USAGE, CREATE ON SCHEMA public` — required since PostgreSQL 15 stopped making `public` writable by default, without which Alembic fails — and `CREATE EXTENSION pgcrypto`, which needs superuser and therefore cannot live in a migration run by the application role. Migration `0001` still issues `CREATE EXTENSION IF NOT EXISTS pgcrypto`, a no-op when already provisioned, so a superuser-run deployment works unchanged.
 
+
+#### Revision (2026-10-27) — surrogate key on `artwork_ai_content`
+
+Following doc 05 v2.2 (Decision 12), migration **`0006_surrogate_key_artwork_ai_content`** replaces `artwork_id` as the primary key with a surrogate `id`, adds the partial unique index `ux_artwork_ai_content_active_artwork_id`, and moves `artwork_content_sources` onto `content_id`. It resolves the soft-delete/upsert conflict recorded in doc 06 (§11). Applied as a new migration rather than by rewriting `0004`/`0005`, which had already run.
+
+| Check | Result |
+| ----- | ------ |
+| Upgrade over existing rows | Every source backfilled onto its parent row |
+| Downgrade with one row per artwork | Reverses cleanly, sources back on `artwork_id` |
+| Downgrade once a retired row sits beside an active one | Refuses with an explicit error, revision left at `0006` |
+| `downgrade base` → `upgrade head` on an empty database | All six migrations, clean; `alembic check` reports no divergence |
+| Schema suite (`test_schema_doc05.py`) | 39 assertions, all pass — including retire-and-recreate: the retired row and its sources are preserved, a fresh active row is created, a second active row is rejected |
+
+The upsert's conflict target becomes `ON CONFLICT (artwork_id) WHERE expired_at IS NULL` — the clause PostgreSQL needs to infer a partial index, verified before the specification was written.
+
 ---
 
 ### Phase 3 — REST Skeleton and Error Catalog
@@ -276,6 +291,15 @@ Two further pending issues surfaced while drawing the existence check into doc 0
 The fake Harvard client is what makes two guarantees testable: a persisted block is served **without consulting Harvard at all** (RNF-001), and a Harvard outage maps to `502`. Seeded rows use negative artwork IDs, which Harvard never issues, and are removed after the run.
 
 Generation remains stubbed: an artwork that exists but has nothing persisted returns `200` with an empty block — the same response the endpoint gives when the model has nothing reliable to say, so the contract already holds and the front-end of Phase 6 can be built against it. The stub is marked `PROVISIONAL` in `backend/app/persistence/insight_card.py`.
+
+#### Revision (2026-10-27) — unreadable database treated as a missing block
+
+By author decision (doc 06, §11 item 2), a database that cannot be read during the check no longer surfaces as `500 INTERNAL_ERROR`: the block is treated as missing and the flow continues, persisting nothing. Two findings shaped the implementation:
+
+- **Connection failures are not SQLAlchemy errors.** Probed against a closed port, an unreachable host and rejected credentials, the driver raised `ConnectionRefusedError`, `OSError`, `TimeoutError` and asyncpg's own exceptions, unwrapped. The fallback therefore catches those families explicitly; catching `SQLAlchemyError` alone would have let an outage through as a `500`.
+- **An unreachable host took ~21s to fail** with no limit configured. Connection and query timeouts of 3s and 5s now keep the fallback inside RNF-002's window (doc 06, §8).
+
+Endpoint suite: 40 assertions, all pass. The database-unreadable case runs against a session on a closed port, so it exercises the driver's real exceptions rather than a simulated one.
 
 ---
 

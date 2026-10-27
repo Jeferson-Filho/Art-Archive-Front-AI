@@ -1,6 +1,6 @@
 # Interface Specification — API Contract — Art Archive AI
 
-**Version:** 2.2
+**Version:** 2.3
 **Date:** 2026-10-27
 **Status:** In Review
 **Base Documents:** [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.4 — Authentication](./requeriments/02.4-authentication.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md), [06 — Persistence Flow](./06-persistence-flow.md)
@@ -37,6 +37,8 @@
 > **Change Note (2026-07-26, v2.1):** the single `GET /artworks/{artwork_id}/insight-card` endpoint is replaced by **two independent endpoints**, one per Insight Card block: `GET /artworks/{artwork_id}/historical-context` and `GET /artworks/{artwork_id}/comparative-analysis`. This clarifies that the front-end fires **three fully independent requests** on artwork visit — one per block, including Alt Text — never a single request that bundles two blocks together (RF-001, RF-013). The historical-context and comparative-analysis blocks are still presented as one combined Insight Card region in the UI (RF-005, RF-006, RF-007), but that aggregation is now performed by the **front-end**, once both of its independent responses have settled — see doc 06 (§5) and doc 08 (§6).
 >
 > **Change Note (2026-10-27, v2.2):** two gaps surfaced while implementing doc 99 Phase 3 were resolved by author decision. (1) The per-block endpoints now return `502 HARVARD_API_ERROR` when Harvard fails while the artwork's existence is being checked — previously unspecified. (2) Framework-level errors (invalid parameters, unknown routes, wrong methods, unhandled exceptions) now use the standard envelope, adding `NOT_FOUND`, `METHOD_NOT_ALLOWED`, and `INTERNAL_ERROR` to the catalog and extending `VALIDATION_ERROR` beyond the auth endpoints (Section 6.1). Section 8's only pending issue is closed. Section 4 also records that Harvard signals a nonexistent artwork with HTTP `200` and an error body, not a `404`.
+>
+> **Change Note (2026-10-27, v2.3):** by author decision, a database that cannot be read on the per-block endpoints is handled as a missing block — the endpoint generates and returns a normal `200`, persisting nothing — instead of failing with `500 INTERNAL_ERROR` (Section 4; doc 06, §11).
 
 ---
 
@@ -87,6 +89,8 @@ Implements the per-block verification and generation logic specified in doc 06 (
 `historical_context` may be empty, with `historical_context_sources` empty in that case (RF-005, RF-010) — for insufficient information (RF-002, scenario 3), no appropriate source (RF-010, scenario 10.2), or a non-timeout technical failure (provider error, malformed response), all of which are treated identically at this endpoint: a `200` with empty content, never a `5xx`. This is a deliberate departure from the previous version of this contract, which used a `502 GENERATION_FAILED` for any generation failure: under RF-007, a non-timeout failure is never surfaced as an HTTP error, only as the block's absence.
 
 > **Note (RF-004, scenario 2):** if generation succeeds but persistence to the database fails, this endpoint still returns the generated content as part of a `200` — the persistence failure is logged on the backend and never exposed to the client (doc 06, §2).
+>
+> **Note (database unreadable, 2026-10-27):** if the database cannot be read for the initial check, the endpoint behaves as on a first visit — it generates and returns the block as a normal `200`, and persists nothing (doc 06, §2 and §11). A database outage never surfaces as an error from this endpoint.
 
 **Error responses**
 
@@ -305,7 +309,7 @@ Section 1 requires **every** error to use the standard envelope. Errors raised b
 
 - **Invalid input** (a path or query parameter of the wrong type) → `400 VALIDATION_ERROR`, reusing the existing catalog code rather than introducing `422`. The rejected value is not echoed back in the message.
 - **Other framework HTTP errors** → the HTTP status unchanged, with the reason phrase as the code: `NOT_FOUND`, `METHOD_NOT_ALLOWED`.
-- **Unhandled exceptions** → `500 INTERNAL_ERROR`, with a generic message; the exception is logged on the backend and never exposed to the client.
+- **Unhandled exceptions** → `500 INTERNAL_ERROR`, with a generic message; the exception is logged on the backend and never exposed to the client. A failure to *read* the database on the per-block endpoints is not one of these: it is handled as a missing block (Section 4).
 
 The same decision extends `HARVARD_API_ERROR` to the per-block endpoints (Section 4), where Harvard is consulted to confirm the artwork exists.
 
