@@ -26,7 +26,8 @@ const COLLAPSED_HEIGHT_PX = 156;
  */
 export default function InsightCard({ state }: { state: InsightCardState }) {
   return (
-    <section className="w-full flex flex-col gap-4 border-4 border-golden-yellow rounded-2xl px-6 py-4">
+    <section className="w-full flex flex-col gap-2">
+      {/* Title outside the card, as the page's "Artist" and "Description" blocks do */}
       <div className="flex items-center justify-between gap-4">
         <h2 className="text-lg font-semibold">Context information</h2>
         <div className="flex items-center gap-3">
@@ -44,14 +45,16 @@ export default function InsightCard({ state }: { state: InsightCardState }) {
         </div>
       </div>
 
-      {state.status === "loading" && <LoadingBody />}
-      {state.status === "displayed" && <DisplayedBody blocks={state.blocks} />}
-      {state.status === "error" && (
-        <p className="flex items-start gap-2 text-md">
-          <AlertCircle size={20} className="shrink-0 mt-0.5 text-golden-yellow-darker" />
-          {state.reason === "timeout" ? TIMEOUT_ERROR : STANDARD_ERROR}
-        </p>
-      )}
+      <div className="flex flex-col gap-4 border-4 border-golden-yellow rounded-2xl px-6 py-4">
+        {state.status === "loading" && <LoadingBody />}
+        {state.status === "displayed" && <DisplayedBody blocks={state.blocks} />}
+        {state.status === "error" && (
+          <p className="flex items-start gap-2 text-md">
+            <AlertCircle size={20} className="shrink-0 mt-0.5 text-golden-yellow-darker" />
+            {state.reason === "timeout" ? TIMEOUT_ERROR : STANDARD_ERROR}
+          </p>
+        )}
+      </div>
     </section>
   );
 }
