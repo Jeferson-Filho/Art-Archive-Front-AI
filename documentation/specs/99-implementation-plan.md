@@ -1,9 +1,17 @@
 # Implementation Plan — Art Archive AI
 
-**Version:** 1.0
-**Date:** 2026-10-17
+**Version:** 1.1
+**Date:** 2026-10-28
 **Status:** In review
 **Base documents:** [00 — Development Rules](./00-development-rules.md), [01 — Vision and Scope](./01-vision-scope.md), [04 — Architecture](./04-architecture.md), [05 — Database](./05-database.md), [06 — Persistence Flow](./06-persistence-flow.md), [07 — API Contract](./07-api-contract.md), [08 — Navigation Flow](./08-navigation-flow.md), [09 — AI Pipeline](./09-ai-pipeline.md), [11 — Prompt Engineering](./prompt-engineering/11-prompt-engineering.md)
+
+> **Change Note (2026-10-28, v1.1) — phase order restructured by author decision.** Phases 0–6 keep their numbers. After them:
+>
+> - **Phase 7 — Deployment** is new: the application on a public domain, preferably through GitHub.
+> - **Phase 8 — Tuning** merges the validations and refinement still pending from Phases 4 and 5 with what was Phase 8 (testing of the AI feature).
+> - **Phase 9 — Authentication** is what was Phase 7, moved last: it is not a priority this cycle.
+>
+> Phases 4 and 5 are closed as a first version — what they verified is checked, what they did not is now part of Phase 8. Phase 0 is closed.
 
 ---
 
@@ -27,8 +35,9 @@ It defines **what is built, in what order, and under which acceptance criteria**
 | REST API | Error catalog, per-block endpoints, Harvard proxy contract | 1, 3 |
 | AI core | Historical context and comparative analysis — pipeline, persistence, endpoints | 4, 5 |
 | Insight Card | Front-end integration: combined states, disclosure notice, sources | 6 |
-| Authentication | Email/password over PostgreSQL; Firebase fully removed | 7 |
-| Validation | Testing of the AI generation feature against its FRs/NFRs | 8 |
+| Deployment | The application on a public domain over HTTPS, deployed from GitHub | 7 |
+| Tuning | Validation and refinement of the AI pipeline; testing of the AI generation feature against its FRs/NFRs | 8 |
+| Authentication | Email/password over PostgreSQL; Firebase fully removed | 9 |
 
 ### 2.2 Deferred — specified but not built in this cycle
 
@@ -58,7 +67,7 @@ Doc 00 (§3.6) requires every technical decision not foreseen in a specification
 | 6 | The front-end gets a **second Axios instance** for AI endpoints, with a **90s** timeout (revised from 60s, 2026-10-27) | `src/libs/axios/axios.ts` hardcodes `timeout: 10000`. A 10s client timeout would abort every first-visit generation long before the backend's 60s budget (RNF-002) elapses, making the Insight Card appear to fail on essentially every uncached artwork. The MVP instance keeps its 10s timeout for Harvard proxy calls. **Why 90s and not 60s:** RNF-002's 60s count from when generation is triggered, but the backend first reads the database (up to 8s, doc 06 §8) and checks the artwork with Harvard (up to 10s) — up to ~78s before it can answer. A 60s client limit would abort first, even before the backend's own `504` arrived. A client-side timeout is classified like a `504`, as RF-007 scenario 3 describes the case as requests that "exceed the configured time limit". |
 | 9 | LLM: **`gpt-4.1-mini`**, deployment `gpt-4.1-mini-art-archive`, Global Standard, 15k TPM, default guardrails; `gpt-4.1` if it proves worth it | Author decision, 2026-10-27. Chosen for cost during development and for instruction-following, which doc 11's "return empty rather than invent" rules rely on; the final model is settled by the side-by-side comparison of doc 11 (§5). Global Standard is the only type offering it in Brazil South. Full settings, and the three open risks (rate limit, content filter, web search), in doc 09 (§6). Blocks the start of Phase 4 on a three-call test of the Azure API. **Test run 2026-10-27:** image + `web_search` + structured output works together on the Responses API, which becomes the call shape (doc 09 v2.2, §6); the rate limit was raised to 50k TPM and a custom guardrail replaced `DefaultV2`. |
 | 10 | **The first version of Phases 4–5 targets artworks the content filter lets through**; the filter blocks are recorded, not handled | Author decision, 2026-10-27: the pipeline must work end to end first — even if only for specific artworks, such as 306240 — and be refined afterwards. The test showed the Azure content filter blocking images with nudity or violence and, for one artwork, the answer built from web-search results. In this version those cases follow the existing outcome mapping (an empty block, nothing persisted); challenges and candidate solutions are recorded in `documentation/Challenges.txt`. |
-| 7 | Password reset emails are **logged to the backend console** in development, not sent through a real SMTP provider | No specification names an email provider, and RF-029's observable behavior (identical response whether or not the email exists) does not depend on delivery actually happening. Phase 7 implements token generation, hashing, expiry, and single-use consumption in full; only the transport is stubbed. **This is a deviation from RF-029 scenario 029.1** ("the system sends a password-reset link to that email") and must be resolved before any deployment beyond the development environment. |
+| 7 | Password reset emails are **logged to the backend console** in development, not sent through a real SMTP provider | No specification names an email provider, and RF-029's observable behavior (identical response whether or not the email exists) does not depend on delivery actually happening. Phase 9 implements token generation, hashing, expiry, and single-use consumption in full; only the transport is stubbed. **This is a deviation from RF-029 scenario 029.1** ("the system sends a password-reset link to that email") and must be resolved before any deployment beyond the development environment. Since the public deployment (Phase 7) now comes before authentication (Phase 9), this means: before Phase 9's password reset reaches the deployed environment. |
 | 8 | API documentation is **generated by FastAPI** (Swagger UI at `/docs`, OpenAPI at `/openapi.json`), and a **Postman collection** with per-request tests lives in `backend/postman/` | The two are complementary, not redundant. The OpenAPI document is generated from the code, so it always reflects what the backend actually does — comparing it with doc 07 shows quickly whether the code drifted from the contract. The collection is maintained by hand and carries assertions, so running it (`newman run`) checks the contract end to end against a live server. Neither replaces doc 07, which stays the source of truth: when the contract changes, doc 07 changes first. The default `422` that FastAPI documents on every route is stripped from the OpenAPI document, since validation errors are returned as `400 VALIDATION_ERROR` (doc 07, §6.1). |
 
 ### 3.1 Specification corrections required (Phase 0)
@@ -84,22 +93,26 @@ flowchart TD
     P3 --> P4["Phase 4<br/>Historical context<br/>pipeline + persistence"]
     P4 --> P5["Phase 5<br/>Comparative analysis<br/>pipeline + persistence"]
     P5 --> P6["Phase 6<br/>Insight Card<br/>front-end"]
-    P2 --> P7["Phase 7<br/>Authentication<br/>+ Firebase removal"]
-    P6 --> P8["Phase 8<br/>AI feature testing"]
-    P7 -.->|"independent"| P8
+    P6 --> P7["Phase 7<br/>Deployment"]
+    P7 --> P8["Phase 8<br/>Tuning: validation,<br/>refinement, testing"]
+    P2 --> P9["Phase 9<br/>Authentication<br/>+ Firebase removal"]
+    P8 -.->|"priority order only"| P9
 
     classDef infra fill:#cfe2ff,stroke:#0d6efd,color:#000;
     classDef ai fill:#d4edda,stroke:#28a745,color:#000;
     classDef fe fill:#fff3cd,stroke:#ffc107,color:#000;
     classDef val fill:#e9ecef,stroke:#6c757d,color:#000;
 
-    class P0,P1,P2,P3 infra;
+    class P0,P1,P2,P3,P7 infra;
     class P4,P5 ai;
-    class P6,P7 fe;
+    class P6,P9 fe;
     class P8 val;
 ```
 
-**Phase 7 (Authentication) depends only on Phase 2** and is otherwise independent of the AI track. It is placed after Phase 6 in the numbering because the AI core is the project's academic contribution and carries the most technical risk — it should not wait behind authentication work. If the AI track stalls on an external blocker (Azure quota, API outage), Phase 7 is the correct thing to pull forward.
+**The order after Phase 6 is the author's priority (2026-10-28), not a technical chain:**
+
+- **Phase 7 (Deployment) comes before Tuning** so the application is public early, and every refinement and the final testing of Phase 8 reach — and are measured on — the environment that is actually presented.
+- **Phase 9 (Authentication) comes last** because it is not a priority this cycle. Technically it depends only on Phase 2 and is independent of the AI track. If the AI track stalls on an external blocker (Azure quota, API outage), Phase 9 is still the correct thing to pull forward.
 
 ---
 
@@ -119,12 +132,17 @@ Doc 00 forbids starting a phase whose source specification does not exist, and r
 
 **Acceptance criteria**
 
-- [ ] `99-implementation-plan.md` exists and is approved by the author
-- [ ] RF-001 scenario 001.1 no longer contradicts docs 04/06/07
-- [x] ~~Doc 04 records the retained-`proxy/` amendment~~ — dropped: `proxy/` removed instead, doc 04 needs no change. The port (8000) is still to be recorded in doc 04 §8
-- [ ] Docs 07 §8 and 02.4 no longer carry stale notes
-- [ ] Doc 00 §7 lists the deferrals and the email-transport deviation
-- [ ] Doc 01 §9 index gains a row for this document
+- [x] `99-implementation-plan.md` exists and is approved by the author
+- [x] RF-001 scenario 001.1 no longer contradicts docs 04/06/07
+- [x] ~~Doc 04 records the retained-`proxy/` amendment~~ — dropped: `proxy/` removed instead, doc 04 needs no change
+- [x] Doc 04 §8 records the backend port, 8000 (doc 04 v1.2, 2026-10-28)
+- [x] Docs 07 §8 and 02.4 no longer carry stale notes
+- [x] Doc 00 §7 lists the deferrals and the email-transport deviation
+- [x] Doc 01 §9 index gains a row for this document
+
+#### Result (2026-10-28)
+
+Every correction of §3.1 is applied: RF-001 scenario 001.1 (doc 02.1, change note of 2026-10-17), doc 07 §8's closing line, the stale note of doc 02.4, the doc 00 §7 index, the doc 01 §9 row and, last, the port in doc 04 §8.
 
 ---
 
@@ -200,7 +218,7 @@ With parity validated, `proxy/` was deleted from the repository — eight files,
 
 **Delivers:** the PostgreSQL container, the SQLAlchemy models, and Alembic migrations `0001` through `0005` in the order doc 05 (§7) fixes.
 
-All five tables are created, including the three user-domain tables that Phase 7 will consume and the `alt_text*` columns that this cycle leaves `NULL` (§2.2). Doc 05's DDL is authoritative, down to the `pgcrypto` extension, the index names, and the `chk_artwork_ai_content_has_block` and `chk_sources_block_type` constraints.
+All five tables are created, including the three user-domain tables that Phase 9 will consume and the `alt_text*` columns that this cycle leaves `NULL` (§2.2). Doc 05's DDL is authoritative, down to the `pgcrypto` extension, the index names, and the `chk_artwork_ai_content_has_block` and `chk_sources_block_type` constraints.
 
 **Acceptance criteria**
 
@@ -336,17 +354,33 @@ Only a timeout produces a `5xx`. Every other failure is indistinguishable from "
 
 **Acceptance criteria**
 
-- [ ] Scenario 002.1 — valid image and complete metadata produce non-empty text mentioning period and movement
-- [ ] Scenario 002.2 — missing metadata fields yield text built only from the fields present, with nothing invented and no error
-- [ ] Scenario 002.3 — insufficient information yields `""`, nothing persisted, regeneration attempted on the next visit
-- [ ] Scenario 004.1 — non-empty content is persisted under `artwork_id` with its `prompt_version` and `generated_at`
-- [ ] Scenario 004.2 — a simulated write failure still returns `200` with content, logs the error, surfaces nothing to the client
-- [ ] Scenario 010.1 — sources are returned alongside the text and stored in `artwork_content_sources`
-- [ ] Scenario 010.2 — no relevant source yields `""` and `[]`, treated as a non-error
-- [ ] RNF-001 — a second request for the same artwork is served from the database in ≤500ms (p95), with no LLM call
-- [ ] RNF-002 — a call exceeding 60s returns `504 GENERATION_TIMEOUT`
-- [ ] RNF-006 — `historical_context_prompt_version` reads `v1` on every persisted row
-- [ ] Concurrency — two simultaneous requests for the same uncached artwork both return content; exactly one write lands; neither returns a `5xx`
+Closed as a first version (author decision, 2026-10-28, building on Decision 10): the criteria verified are checked; the rest moved to **Phase 8** (§1 there), marked ↪.
+
+- [x] Scenario 002.1 — valid image and complete metadata produce non-empty text mentioning period and movement
+- ↪ Scenario 002.2 — missing metadata fields yield text built only from the fields present, with nothing invented and no error
+- ↪ Scenario 002.3 — insufficient information yields `""`, nothing persisted, regeneration attempted on the next visit
+- [x] Scenario 004.1 — non-empty content is persisted under `artwork_id` with its `prompt_version` and `generated_at`
+- ↪ Scenario 004.2 — a simulated write failure still returns `200` with content, logs the error, surfaces nothing to the client
+- [x] Scenario 010.1 — sources are returned alongside the text and stored in `artwork_content_sources`
+- ↪ Scenario 010.2 — no relevant source yields `""` and `[]`, treated as a non-error
+- ↪ RNF-001 — a second request for the same artwork is served from the database in ≤500ms (p95), with no LLM call — one measurement so far (0.23s), not a p95
+- ↪ RNF-002 — a call exceeding 60s returns `504 GENERATION_TIMEOUT`
+- [x] RNF-006 — `historical_context_prompt_version` reads `v1` on every persisted row
+- ↪ Concurrency — two simultaneous requests for the same uncached artwork both return content; exactly one write lands; neither returns a `5xx`
+
+#### Result (2026-10-27) — first version
+
+Built to the call shape the Azure API test settled (doc 09 v2.2): the image is downloaded and sent as base64, and the call goes to the Responses API with `web_search` and a strict JSON Schema. Validated against Azure OpenAI with artwork **306240** (*Fish, after Egyptian Wall Painting*), one the content filter lets through (Decision 10):
+
+| Check | Result |
+| ----- | ------ |
+| First visit, both blocks requested in parallel | `200` in about 12s each, 4 sources each |
+| Historical context (002.1) | Places the work in the 19th-century fascination with Egyptian art, Orientalism and Egyptomania |
+| Persistence (004.1, RNF-006) | One active row, `historical_context` at prompt `v1` with `generated_at`; 4 rows in `artwork_content_sources` under its `content_id` |
+| Second visit | Served from the database in 0.23s, the exact persisted text, no LLM call |
+| Phase 3 endpoint suite | Still passes, without reaching Azure: its fake Harvard records carry no image |
+
+The sources reached the database, but 2 of the 7 distinct URLs across both blocks answered `404` — validating sources is part of Phase 8. The content-filter blocks found in the test (images with nudity or violence, the output for one artwork) return an empty block in this version; they are recorded in `documentation/Challenges.txt`.
 
 ---
 
@@ -362,11 +396,18 @@ The shared structure should be factored only as far as Phase 4 and Phase 5 actua
 
 **Acceptance criteria**
 
-- [ ] Scenario 003.1 — valid input produces non-empty text referencing at least one artist or artwork with a similar period, technique, or culture
-- [ ] Scenario 003.2 — no confident comparison available yields `""`, nothing persisted, no fabricated comparison
-- [ ] Scenario 004.3 — when one block returns content and the other `""`, only the non-empty block is written; the row is legitimately partial
-- [ ] The full Phase 4 criteria list, applied to this block: persistence, write-failure handling, sources, RNF-001, RNF-002, RNF-006, concurrency
-- [ ] Independence — with `historical_context` already persisted and `comparative_analysis` missing, only one LLM call is made (RF-001 scenario 001.4)
+Closed as a first version, as Phase 4; ↪ marks what moved to Phase 8.
+
+- [x] Scenario 003.1 — valid input produces non-empty text referencing at least one artist or artwork with a similar period, technique, or culture
+- ↪ Scenario 003.2 — no confident comparison available yields `""`, nothing persisted, no fabricated comparison
+- ↪ Scenario 004.3 — when one block returns content and the other `""`, only the non-empty block is written; the row is legitimately partial
+- [x] From the Phase 4 list, applied to this block: persistence (004.1), sources (010.1), RNF-006
+- ↪ From the Phase 4 list, applied to this block: write-failure handling, RNF-001 (p95), RNF-002, concurrency
+- ↪ Independence — with `historical_context` already persisted and `comparative_analysis` missing, only one LLM call is made (RF-001 scenario 001.4)
+
+#### Result (2026-10-27) — first version
+
+Same run as Phase 4, artwork 306240. The comparative analysis compares the work with **David Roberts** and **Jean-Léon Gérôme** (003.1), 4 sources stored, `comparative_analysis_prompt_version` = `v1`. Both blocks landed in the **same row**, written by two concurrent requests about 0.8s apart, neither overwriting the other — the per-column upsert of doc 06 (§6) for different blocks, observed on real traffic.
 
 ---
 
@@ -420,7 +461,7 @@ The two blocks render as paragraphs inside a single **"Context information"** se
 - In mock mode, `?insightCardMock=<scenario>` reproduces each Gherkin scenario: `both` (default, long enough to collapse), `short`, `historical-only`, `comparative-only`, `both-empty`, `mixed-failure`, `both-timeout`, `pending`. Mock content is labelled on screen with a "Mock data" badge.
 - Both sources produce the same outcome type, so switching to real data is the variable alone — no code change.
 
-**This phase must be re-validated once Phases 4 and 5 land**, against real generations: real text lengths, real sources, and real `504`s.
+**This phase must be re-validated once Phases 4 and 5 land**, against real generations: real text lengths, real sources, and real `504`s. *Started 2026-10-27:* with `NEXT_PUBLIC_INSIGHT_CARD_SOURCE=api`, the generated content of artwork 306240 renders in the card with no "Mock data" badge, collapsed at 156px of 2,064 and expanding through "See more". The rest — the loading state across a real generation, a real `504` — is part of Phase 8.
 
 #### Result (2026-10-27)
 
@@ -438,7 +479,138 @@ The two blocks render as paragraphs inside a single **"Context information"** se
 
 ---
 
-### Phase 7 — Authentication over PostgreSQL and Firebase Removal
+### Phase 7 — Deployment
+
+**Governed by:** doc 04 (§8, §11) — §8 is revised first, since today it describes only the development host; doc 07 (§1, CORS); RNF-005; RNF-008
+
+**Delivers:** the application — front-end, backend and database — reachable on a public domain over HTTPS, and redeployed from the GitHub repository by an automated pipeline.
+
+Added by author decision (2026-10-28), with a stated preference: a domain, **preferably through GitHub**.
+
+**What GitHub can and cannot host.** GitHub Pages serves static files only. It cannot run the FastAPI backend or PostgreSQL, and the Next.js front-end would fit only as a static export, which drops `src/middleware.ts` and needs every dynamic route — `/object/[objectId]` among them — generated at build time, impractical for the Harvard collection. GitHub's realistic role is therefore:
+
+- the **repository** as the single source of every deployment;
+- **GitHub Actions** as the build-and-deploy pipeline — which also answers the "absence of CI/CD" risk of doc 04 (§11);
+- possibly the **domain**, through the offers of the GitHub Student Developer Pack (availability to be confirmed at decision time).
+
+The services themselves run on a host.
+
+**Decisions the author takes before this phase starts**, then recorded in doc 04 (§8) before any infrastructure is created (doc 00, §3.1):
+
+| Decision | Candidates (not exhaustive) | Note |
+| -------- | --------------------------- | ---- |
+| Where the front-end runs | Vercel (deploys Next.js straight from a GitHub repository); Azure; a single VM running the existing `docker-compose.yml` | |
+| Where the backend and the database run | Azure — the same student credit that pays for Azure OpenAI; a single VM with Docker Compose; a platform such as Render or Railway | Free tiers and student offers are checked at decision time, not assumed here |
+| The domain | A domain from the GitHub Student Developer Pack offers; a subdomain provided by the host | |
+| Which branch deploys | e.g. `main`, once `ai_expansion` is merged | |
+
+**Constraints any choice must respect**, from specifications and decisions already in force:
+
+- **Secrets** — the Harvard key, the Azure OpenAI key and the database connection string live only in the host's secret store or in GitHub Actions secrets; never in the repository, a workflow file, a build log or the front-end bundle (RNF-005). Credentials that circulated outside a secret store during development — the Harvard API key and the database passwords — are rotated before the first public deployment.
+- **Build-time variables** — `NEXT_PUBLIC_*` values are inlined when Next.js builds: `NEXT_PUBLIC_API_URL` must point at the public backend and `NEXT_PUBLIC_INSIGHT_CARD_SOURCE` must be `api` in the build environment, not only at runtime.
+- **CORS** — `FRONTEND_ORIGIN` is set to the public domain (doc 07, §1).
+- **HTTPS end to end** — doc 04 (§8) already draws REST over HTTPS, and Phase 9's session cookie will be `Secure`.
+- **Database** — provisioned as in Phase 2 (an application role without superuser, `pgcrypto` created by a privileged role), then `alembic upgrade head`.
+- **Generation is publicly triggerable, and billed.** Every first visit to an artwork calls Azure OpenAI against the student credit, and the generation endpoints are unauthenticated by design — visitors read the Insight Card without logging in (doc 02.1). An Azure budget alert must be in place before the domain is published; per-client rate limiting is a candidate safeguard for Phase 8.
+- **Authentication is not there yet** — until Phase 9, the deployed login and sign-up screens are the MVP's inert Firebase ones. No password reset exists yet, so Decision 7's email deviation does not reach the deployment in this phase.
+
+**Acceptance criteria**
+
+- [ ] The hosting of each service, the domain and the deploying branch are recorded in doc 04 (§8) before any infrastructure is created
+- [ ] The application answers on its domain over HTTPS
+- [ ] The Phase 1 parity checks pass on the deployed stack: the grid loads and scrolls, filters apply, the detail page renders metadata, images and artists
+- [ ] The Insight Card generates and persists on the deployed stack for a known artwork (306240), and the second visit is served from the database
+- [ ] A push to the deploying branch redeploys through GitHub Actions, with no manual step
+- [ ] Migrations run with `alembic upgrade head` against the deployed database
+- [ ] No secret in the repository, a workflow file, a build log or the front-end bundle (RNF-005)
+- [ ] An Azure budget alert covers the deployed usage
+
+---
+
+### Phase 8 — Tuning: Validation, Refinement and Testing of the AI Feature
+
+**Governed by:** doc 02.1; doc 03.1 (UC-01 through UC-04); doc 02.5 (RNF-001, RNF-002, RNF-003, RNF-005, RNF-006, RNF-007, RNF-008); doc 06; doc 09; doc 11 (§5) with 11.1 and 11.2; doc 00 (§2.8, §4)
+
+**Delivers:** the AI pipeline validated against every criterion Phases 4 and 5 left open, refined against the blocks recorded in `documentation/Challenges.txt`, and the validated evidence that the Insight Card feature satisfies its requirements end to end.
+
+Created by author decision (2026-10-28): it merges the pending validations and refinement of Phases 4 and 5 — which delivered a working first version (Decision 10) — with what was Phase 8, the testing of the AI generation feature.
+
+**Order inside the phase:** validate, then refine, then test the feature. The final evidence (part 4) must be produced against the version that ships, so it comes last. A refinement that changes a specification — a retry without the image, for instance, which doc 09 (§8) forbids today — is raised with the author and specified before it is coded (doc 00, §4). Every new prompt version is logged in doc 11.1 or 11.2 (§6) before it becomes active (doc 11, §4).
+
+#### 1. Validations left open by Phases 4 and 5
+
+- Scenario 002.2 — missing metadata fields yield text built only from the fields present, with nothing invented and no error
+- Scenarios 002.3 and 003.2 — insufficient information, or no confident comparison, yields `""`; nothing persisted; regeneration attempted on the next visit
+- Scenario 004.2 — a simulated write failure still returns `200` with the content, logs the error, surfaces nothing to the client
+- Scenario 004.3 — one block with content and the other `""`: only the non-empty block is written, and the row is legitimately partial
+- Scenario 010.2 — no relevant source yields `""` and `[]`, treated as a non-error
+- Independence (scenario 001.4) — with one block persisted and the other missing, exactly one LLM call is made
+- RNF-001 — the persisted block is served in ≤500ms at p95 (one measurement so far: 0.23s)
+- RNF-002 — a call exceeding 60s returns `504 GENERATION_TIMEOUT`
+- Concurrency — two simultaneous requests for the same uncached artwork and block both return content; exactly one write lands; neither returns a `5xx`
+- Automated tests for the pipeline against a fake LLM, so these checks rerun at no Azure cost
+
+#### 2. Refinement of the pipeline (`documentation/Challenges.txt`)
+
+| Item | Observed | Candidate directions |
+| ---- | -------- | -------------------- |
+| Content filter on the image | Nudity and violence refused before the model sees the image (228651, 234261) | Raise the guardrail's thresholds; retry without the image; request the modified content filter |
+| Content filter on the output | The answer built from web-search results blocked as `hate: medium` (299843), unchanged by the custom guardrail so far | Confirm the guardrail's thresholds; retry without web search |
+| Searches skipped | Without forcing, the model sometimes answers with no search and no sources | `tool_choice: "required"` worked in the test |
+| Invented sources | 2 of 7 distinct URLs answered `404` in the first real generation | Keep only URLs the search actually returned (`web_search_call.action.sources`) |
+| Source quality | Low-quality sites among museum ones | Preferred domains in the prompt |
+| Source order | A block's sources are stored with one shared `created_at`, so the random UUID breaks the tie and a later visit lists them in a different order than generated | Store or read them in generation order |
+| Hallucination | One unverified claim seen in the playground | The doc 11 (§5) process, evaluated against doc 14's criteria |
+| Model | `gpt-4.1-mini` in use | Side-by-side comparison with `gpt-4.1` (doc 11, §5; Decision 9) |
+| Cost per artwork | Tokens measured (~3,800 in / ~400 out and one search per block); the search charge is not | Measure it before the deployment's budget is set |
+| Abuse of the public endpoints | Any visitor can trigger billed generation (Phase 7) | Per-client rate limiting |
+
+#### 3. Front-end and contract re-validation
+
+- Phase 6 against real generation — the loading state across a real (~12s) generation, a real `504`, real text lengths and sources
+- The Postman collection still expects the empty block of Phase 3; it is updated for real generation, which can take up to 60s
+
+#### 4. Testing of the AI generation feature
+
+Phases 4 through 6 each validated their own block in isolation. This part validates the **feature**, across the full stack, in the four use cases of doc 03.1 — and produces the record of that validation, which doc 12 (Test Plan) and doc 13 (Test Report) will consume. With Phase 7 done first, it runs against the deployed environment wherever the measurement concerns what visitors get.
+
+**Use-case coverage:**
+
+| Use case | What is exercised |
+| -------- | ----------------- |
+| UC-01 | First visit, neither block cached: two separate LLM calls, non-empty blocks persisted, single loading state, card rendered only once both settle |
+| UC-02 | Return visit, both cached: no LLM call, ≤500ms per block |
+| UC-03 | One block cached: exactly one LLM call, both blocks shown together |
+| UC-04 | Both fail: standard message for mixed or non-timeout failures, timeout-specific message when both are `504`, rest of page functional |
+
+**Non-functional verification**, using the methods each NFR names:
+
+- **RNF-001** — load test (K6 or equivalent) against both endpoints with the database pre-populated, measuring each block independently against the 500ms p95 bar
+- **RNF-002** — end-to-end timing against real Azure OpenAI calls, covering both "both blocks pending" and "one pending"
+- **RNF-003** — after each successful generation in the test run, query the database directly; the loss rate must stay within the 1% budget
+- **RNF-005** — grep the repository, the built front-end bundle, and the backend logs for key patterns; zero occurrences
+- **RNF-006** — confirm `prompt_version` is populated on every persisted row
+- **RNF-007** (revised) — visual inspection at 1024×768: the loading indicator sits on the section's heading row, visible as soon as the section is
+- **RNF-008** — with Azure OpenAI unreachable, confirm the grid, filters, and detail page remain fully functional
+
+**Scope boundary:** this phase does **not** test Alt Text or accessibility — both are deferred (§2.2). Doc 12's test plan, when written, must record that exclusion so the gap is not mistaken for a passing result.
+
+**Acceptance criteria**
+
+- [ ] Every validation of part 1 passes
+- [ ] Every item of part 2 is either resolved — through a specification change where one is needed — or recorded as a pending issue per doc 00 (§4)
+- [ ] Phase 6 re-validated against real generation, and the Postman collection passes against it (part 3)
+- [ ] Every Gherkin scenario in doc 02.1 (RF-001 through RF-010) passes, excluding those referencing Alt Text
+- [ ] Every acceptance criterion in doc 03.1 (UC-01 through UC-04) passes
+- [ ] Each NFR above is verified by the method it specifies, with the result recorded
+- [ ] Failures found are either fixed, or recorded as pending issues per doc 00 (§4) — never silently accepted
+- [ ] The results are written up in a form doc 13 can consume
+
+---
+
+### Phase 9 — Authentication over PostgreSQL and Firebase Removal
+
+> Was Phase 7 until 2026-10-28; moved last by author decision, as authentication is not a priority this cycle (§4).
 
 **Governed by:** doc 02.4 (RF-026 through RF-031); doc 03.4 (UC-15 through UC-20); doc 07 (§5); doc 08 (§5); doc 05 (§5.1, §5.2, §5.3)
 
@@ -460,7 +632,7 @@ The two blocks render as paragraphs inside a single **"Context information"** se
 
 **Firebase removal** (doc 04, §9, Decision 5): `src/libs/firebase/` deleted, `firebase_admin` dropped from the backend dependencies, the `.firebaseAdminSDK.json` bind mount removed from Compose, and `NEXT_PUBLIC_FIREBASE_API_KEY` removed from `.env.template`. No transition window applies — no Firebase user data is migrated (doc 00, §2.5; doc 05, §1).
 
-Email transport is stubbed per Decision 7 — a deviation from RF-029 that must be closed before any non-development deployment.
+Email transport is stubbed per Decision 7 — a deviation from RF-029 that must be closed before this phase's password reset reaches the deployed environment of Phase 7.
 
 **Acceptance criteria**
 
@@ -476,45 +648,6 @@ Email transport is stubbed per Decision 7 — a deviation from RF-029 that must 
 
 ---
 
-### Phase 8 — Testing of the AI Generation Feature
-
-**Governed by:** doc 02.1; doc 03.1 (UC-01 through UC-04); doc 02.5 (RNF-001, RNF-002, RNF-003, RNF-005, RNF-006, RNF-007, RNF-008); doc 00 (§2.8)
-
-**Delivers:** validated evidence that the Insight Card generation pipeline satisfies its requirements end to end.
-
-Phases 4 through 6 each validate their own block in isolation. This phase validates the **feature**, across the full stack, in the four use cases of doc 03.1 — and produces the record of that validation, which is what doc 12 (Test Plan) and doc 13 (Test Report) will consume.
-
-**Use-case coverage:**
-
-| Use case | What is exercised |
-| -------- | ----------------- |
-| UC-01 | First visit, neither block cached: two separate LLM calls, non-empty blocks persisted, single loading state, card rendered only once both settle |
-| UC-02 | Return visit, both cached: no LLM call, ≤500ms per block |
-| UC-03 | One block cached: exactly one LLM call, both blocks shown together |
-| UC-04 | Both fail: standard message for mixed or non-timeout failures, timeout-specific message when both are `504`, rest of page functional |
-
-**Non-functional verification**, using the methods each NFR names:
-
-- **RNF-001** — load test (K6 or equivalent) against both endpoints with the database pre-populated, measuring each block independently against the 500ms p95 bar
-- **RNF-002** — end-to-end timing against real Azure OpenAI calls, covering both "both blocks pending" and "one pending"
-- **RNF-003** — after each successful generation in the test run, query the database directly; the loss rate must stay within the 1% budget
-- **RNF-005** — grep the repository, the built front-end bundle, and the backend logs for key patterns; zero occurrences
-- **RNF-006** — confirm `prompt_version` is populated on every persisted row
-- **RNF-007** — visual inspection at 1024×768: the loading indicator is visible without scrolling
-- **RNF-008** — with Azure OpenAI unreachable, confirm the grid, filters, and detail page remain fully functional
-
-**Scope boundary:** this phase does **not** test Alt Text or accessibility — both are deferred (§2.2). Doc 12's test plan, when written, must record that exclusion so the gap is not mistaken for a passing result.
-
-**Acceptance criteria**
-
-- [ ] Every Gherkin scenario in doc 02.1 (RF-001 through RF-010) passes, excluding those referencing Alt Text
-- [ ] Every acceptance criterion in doc 03.1 (UC-01 through UC-04) passes
-- [ ] Each NFR above is verified by the method it specifies, with the result recorded
-- [ ] Failures found are either fixed, or recorded as pending issues per doc 00 (§4) — never silently accepted
-- [ ] The results are written up in a form doc 13 can consume
-
----
-
 ## 6. Phase-to-Requirement Traceability
 
 | Phase | Functional requirements | Non-functional requirements | Use cases |
@@ -526,8 +659,9 @@ Phases 4 through 6 each validate their own block in isolation. This phase valida
 | 4 | RF-001, RF-002, RF-004, RF-009, RF-010 | RNF-001, RNF-002, RNF-003, RNF-006 | UC-01, UC-02, UC-03 |
 | 5 | RF-001, RF-003, RF-004, RF-009, RF-010 | RNF-001, RNF-002, RNF-003, RNF-006 | UC-01, UC-02, UC-03 |
 | 6 | RF-001, RF-005, RF-006, RF-007, RF-008, RF-010 | RNF-007, RNF-008 | UC-01, UC-03, UC-04 |
-| 7 | RF-026 through RF-031 | RNF-005 | UC-15 through UC-20 |
+| 7 | — (the whole application, deployed) | RNF-005, RNF-008 | — |
 | 8 | RF-001 through RF-010 | RNF-001, RNF-002, RNF-003, RNF-005, RNF-006, RNF-007, RNF-008 | UC-01 through UC-04 |
+| 9 | RF-026 through RF-031 | RNF-005 | UC-15 through UC-20 |
 
 **Requirements not covered by any phase in this cycle:** RF-011, RF-012, RF-013 (Alt Text generation and application); RF-014 through RF-025 (ARIA); RNF-004 (WCAG 2.1 AA). See §2.2.
 
@@ -541,15 +675,16 @@ Doc 00 (§3.4) requires this checklist to be kept current as implementation prog
 
 | Phase | Delivery | Status |
 | ----- | -------- | ------ |
-| 0 | Specification alignment | 🚧 In progress — doc 04 amendment pending author confirmation |
+| 0 | Specification alignment | ✅ Done (2026-10-28) |
 | 1 | Backend service + Harvard proxy + parity validation | ✅ Done (2026-10-17) |
 | 2 | Database + migrations | ✅ Done (2026-10-27) |
 | 3 | REST skeleton + error catalog | ✅ Done (2026-10-27) |
-| 4 | Historical context: pipeline + persistence | 🚧 In progress — first version, for artworks the content filter lets through (Decision 10) |
-| 5 | Comparative analysis: pipeline + persistence | 🚧 In progress — first version, as Phase 4 |
-| 6 | Insight Card on the front-end | ✅ Done on mock data (2026-10-27) — built ahead of Phases 4–5; re-validate with real generation |
-| 7 | Authentication + Firebase removal | ⬜ Not started |
-| 8 | AI generation feature testing | ⬜ Not started |
+| 4 | Historical context: pipeline + persistence | ✅ Done as a first version (2026-10-27) — for artworks the content filter lets through (Decision 10); open validations moved to Phase 8 |
+| 5 | Comparative analysis: pipeline + persistence | ✅ Done as a first version (2026-10-27) — as Phase 4 |
+| 6 | Insight Card on the front-end | ✅ Done (2026-10-27) — on mock data, then real content rendered for artwork 306240; full re-validation in Phase 8 |
+| 7 | Deployment | ⬜ Not started — hosting and domain to be decided by the author |
+| 8 | Tuning: validation, refinement, AI feature testing | ⬜ Not started |
+| 9 | Authentication + Firebase removal | ⬜ Not started |
 
 Legend: ⬜ Not started · 🚧 In progress · ✅ Done
 
@@ -562,11 +697,14 @@ Formal treatment — probability, impact, mitigation — belongs to **doc 15 (Ri
 | Risk | Phase | Note |
 | ---- | ----- | ---- |
 | Harvard proxy rewrite regresses MVP functionality | 1 | Already flagged in doc 04 (§11). Mitigated by making parity validation a hard gate. |
-| Azure OpenAI quota or cost exceeds the educational budget | 4, 5, 8 | Doc 01 (§8, assumption 2) assumes sufficient quota. Phases 4, 5, and 8 all make real calls; Phase 8's load testing is the heaviest consumer. Prefer a small fixed set of test artworks over broad sampling. |
-| Generation quality is poor enough to require prompt iteration | 4, 5 | Doc 11 (§5) anticipates this and defines the process. Every new version needs a version-log row *before* becoming active (doc 11, §4). Budget for at least one iteration per block. |
+| Azure OpenAI quota or cost exceeds the educational budget | 4, 5, 7, 8 | Doc 01 (§8, assumption 2) assumes sufficient quota. Phases 4, 5, and 8 all make real calls; Phase 8's testing is the heaviest planned consumer. Prefer a small fixed set of test artworks over broad sampling. |
+| Public generation endpoints drain the Azure credit | 7, 8 | Once deployed (Phase 7), any visitor — or a script walking artwork IDs — triggers billed generation, since the endpoints are unauthenticated by design. A budget alert is a Phase 7 criterion; rate limiting is a Phase 8 candidate. |
+| The content filter leaves artworks with no Insight Card | 4, 5, 8 | Observed on artworks with nudity or violence, and on one artwork's web-search results (Decision 10; `documentation/Challenges.txt`). Until Phase 8 addresses it, those artworks show the standard error message. |
+| Generation quality is poor enough to require prompt iteration | 4, 5, 8 | Doc 11 (§5) anticipates this and defines the process. Every new version needs a version-log row *before* becoming active (doc 11, §4). Budget for at least one iteration per block — now part of Phase 8. |
+| Secrets leak through the deployment | 7 | New places a key can end up: workflow files, build logs, the front-end bundle (`NEXT_PUBLIC_*` values are public by construction). Phase 7 criterion; keys exposed during development are rotated first. |
 | The 60s client timeout change is forgotten | 6 | Decision 6. The failure mode is silent and misleading: every first visit appears to fail with a generic error while the backend is still working normally. |
 | Deferred Alt Text and ARIA read as unmet success criteria | — | Doc 01 (§7) criteria 3 and 4 are explicitly not met by this cycle (§2.2). This must be stated plainly in the final report rather than left for the committee to discover. |
-| No CI/CD pipeline exists | all | Doc 04 (§11). Every validation in this plan is manual; an unrun check is indistinguishable from a passing one. |
+| No CI/CD pipeline exists | all | Doc 04 (§11). Every validation in this plan is manual; an unrun check is indistinguishable from a passing one. Phase 7 introduces a GitHub Actions deployment pipeline, a natural place to run the automated suites too. |
 
 ---
 

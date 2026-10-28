@@ -1,7 +1,7 @@
 # System Architecture — Art Archive AI
 
-**Version:** 1.1
-**Date:** 2026-07-26
+**Version:** 1.2
+**Date:** 2026-10-28
 **Status:** In review
 **Base documents:** [01 — Vision and Scope](./01-vision-scope.md), [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.4 — Authentication](./requeriments/02.4-authentication.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [03 — Use Cases](./03-use-cases.md)
 
@@ -10,6 +10,8 @@
 > **Change Note (2026-07-26, addendum):** the system policy is that **no register is ever physically deleted** — records are logically retired via an `expired_at` timestamp column (soft delete) instead. This is now reflected in §5 (Database macro view) and §9 (Decision 6). See doc 05 for the full column definition on `users` and `artwork_ai_content`.
 >
 > **Change Note (2026-07-26, §7 correction):** the sequence diagrams in §7 are corrected to show **three fully independent HTTP requests** fired by the front-end on artwork visit — `GET /artworks/{artwork_id}/historical-context`, `GET /artworks/{artwork_id}/comparative-analysis`, and `GET /artworks/{artwork_id}/alt-text` (doc 07, §4) — instead of one bundled `GET /artworks/{artwork_id}/insight-card` request covering all three blocks. The historical-context and comparative-analysis responses are still recombined into a single Insight Card loading/displayed/error state, but that recombination now happens in the **front-end**, once both of its independent responses have settled (doc 06, §5) — the backend performs no such aggregation.
+>
+> **Change Note (2026-10-28, §8):** the backend port, previously "to be defined", is recorded as **8000** (doc 99, Decision 4). §8 still describes the development host; the public deployment target is decided in doc 99 (Phase 7) and recorded here before any infrastructure is created.
 
 ---
 
@@ -288,7 +290,7 @@ The deployment environment remains **self-hosted via Docker Compose**, as in the
 flowchart TB
     subgraph Host["Host (Docker Compose — network_mode: host)"]
         webapp["webapp — Next.js<br/>port 3000"]
-        api["api — Single backend<br/>(replaces Flask)<br/>port to be defined"]
+        api["api — Single backend<br/>(replaces Flask)<br/>port 8000"]
         db[("db — PostgreSQL<br/>port 5432")]
     end
 
