@@ -1,6 +1,8 @@
 """
-Acceptance tests for doc 99, Phase 3 — the two Insight Card endpoints with
-generation still stubbed (doc 07, §4; doc 06, §2, §3, §7).
+Acceptance tests for doc 99, Phase 3 — the two Insight Card endpoints
+(doc 07, §4; doc 06, §2, §3, §7). The fake Harvard records carry no image,
+so generation stops at the pipeline's first step (doc 09, §4) and never
+reaches Azure OpenAI: every generated block comes back empty.
 
 Runs in-process against the real database named by DATABASE_URL, with the
 Harvard client replaced by a fake. That is what makes the failure paths

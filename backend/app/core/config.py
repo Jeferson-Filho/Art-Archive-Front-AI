@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # Database connection (used from Phase 2 onward)
     database_url: str = ""
 
+    # Azure OpenAI (doc 09, §6; doc 99, Decision 9). The endpoint is the
+    # resource URL; the deployment name is what the API addresses, not the model
+    azure_openai_endpoint: str = ""
+    azure_openai_api_key: str = ""
+    azure_openai_deployment: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

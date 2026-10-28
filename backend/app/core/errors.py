@@ -60,6 +60,10 @@ def harvard_api_error() -> APIError:
     return APIError(502, "HARVARD_API_ERROR", "The Harvard Art Museums API returned an error or a non-JSON response.")
 
 
+def generation_timeout() -> APIError:
+    return APIError(504, "GENERATION_TIMEOUT", "Content generation did not finish within the 60-second limit.")
+
+
 def register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(APIError)
     async def handle_api_error(_: Request, exc: APIError) -> JSONResponse:

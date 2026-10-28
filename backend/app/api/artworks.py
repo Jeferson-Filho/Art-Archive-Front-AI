@@ -15,11 +15,12 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ErrorResponse, artwork_not_found, harvard_api_error
+from app.core.errors import ErrorResponse, artwork_not_found, generation_timeout, harvard_api_error
 from app.db.base import get_session
 from app.integrations.harvard import HarvardUnavailableError
 from app.persistence import insight_card
 from app.persistence.insight_card import ArtworkNotFoundError, TextBlock
+from app.pipeline.generation import LLMTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ ERROR_RESPONSES: dict = {
     400: {"model": ErrorResponse, "description": "`VALIDATION_ERROR` — `artwork_id` is not an integer"},
     404: {"model": ErrorResponse, "description": "`ARTWORK_NOT_FOUND` — the artwork does not exist in the Harvard API"},
     502: {"model": ErrorResponse, "description": "`HARVARD_API_ERROR` — Harvard failed while checking the artwork"},
-    504: {"model": ErrorResponse, "description": "`GENERATION_TIMEOUT` — generation exceeded 60s (RNF-002). Reachable once Phase 4 lands."},
+    504: {"model": ErrorResponse, "description": "`GENERATION_TIMEOUT` — generation exceeded 60s (RNF-002)"},
 }
 
 
@@ -100,3 +101,7 @@ async def _resolve(pending: Awaitable[TextBlock], artwork_id: int) -> TextBlock:
     except HarvardUnavailableError as exc:
         logger.warning("Harvard unavailable while checking artwork %s: %s", artwork_id, exc)
         raise harvard_api_error() from None
+    except LLMTimeoutError as exc:
+        # The only generation failure that is not an empty block (doc 09, §10)
+        logger.warning("Generation timed out for artwork %s: %s", artwork_id, exc)
+        raise generation_timeout() from None
