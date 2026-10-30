@@ -1,7 +1,7 @@
 # Implementation Plan — Art Archive AI
 
-**Version:** 1.1
-**Date:** 2026-10-28
+**Version:** 1.2
+**Date:** 2026-10-29
 **Status:** In review
 **Base documents:** [00 — Development Rules](./00-development-rules.md), [01 — Vision and Scope](./01-vision-scope.md), [04 — Architecture](./04-architecture.md), [05 — Database](./05-database.md), [06 — Persistence Flow](./06-persistence-flow.md), [07 — API Contract](./07-api-contract.md), [08 — Navigation Flow](./08-navigation-flow.md), [09 — AI Pipeline](./09-ai-pipeline.md), [11 — Prompt Engineering](./prompt-engineering/11-prompt-engineering.md)
 
@@ -12,6 +12,8 @@
 > - **Phase 9 — Authentication** is what was Phase 7, moved last: it is not a priority this cycle.
 >
 > Phases 4 and 5 are closed as a first version — what they verified is checked, what they did not is now part of Phase 8. Phase 0 is closed.
+>
+> **Change Note (2026-10-29, v1.2) — Phase 7 hosting decided.** The author chose Vercel for the front-end and Render for the backend and database — starting on Render's free instances, upgraded as needed — recorded in doc 04 (§8.2, Decision 7). Railway, chosen first the same day, was dropped because its new signups were paused after a security incident. Phase 7 gains a "Decisions taken" block, and one acceptance criterion changes: redeploy-on-push comes from each platform's own GitHub integration, so a GitHub Actions workflow is no longer required for deployment (§8 risk updated).
 
 ---
 
@@ -504,6 +506,19 @@ The services themselves run on a host.
 | The domain | A domain from the GitHub Student Developer Pack offers; a subdomain provided by the host | |
 | Which branch deploys | e.g. `main`, once `ai_expansion` is merged | |
 
+**Decisions taken (2026-10-29)**, recorded in doc 04 (§8.2, Decision 7):
+
+| Decision | Taken |
+| -------- | ----- |
+| Where the front-end runs | Vercel, Hobby plan |
+| Where the backend and the database run | Render — a web service (root `backend/`) and a Postgres database in the same region, both on free instance types to start |
+| The domain | The platforms' HTTPS subdomains for the first deployment; a custom domain stays open |
+| Which branch deploys | `main`, after `ai_expansion` is merged |
+
+The free instances carry three limits, accepted by the author and detailed in doc 04 (§8.2): the database expires 30 days after creation (**upgrade it before day 30**, and before the December presentations in any case), the web service sleeps after 15 idle minutes, and there is no pre-deploy command, so migrations are run from the development machine.
+
+Consequence for this phase: Vercel and Render each redeploy on push through their own GitHub integration, so the "GitHub Actions" pipeline foreseen above is not needed for deployment. GitHub remains the single source of every deployment. Running the automated suites in GitHub Actions before a deployment is left to Phase 8 (§8, risk "No CI/CD pipeline exists").
+
 **Constraints any choice must respect**, from specifications and decisions already in force:
 
 - **Secrets** — the Harvard key, the Azure OpenAI key and the database connection string live only in the host's secret store or in GitHub Actions secrets; never in the repository, a workflow file, a build log or the front-end bundle (RNF-005). Credentials that circulated outside a secret store during development — the Harvard API key and the database passwords — are rotated before the first public deployment.
@@ -520,8 +535,9 @@ The services themselves run on a host.
 - [ ] The application answers on its domain over HTTPS
 - [ ] The Phase 1 parity checks pass on the deployed stack: the grid loads and scrolls, filters apply, the detail page renders metadata, images and artists
 - [ ] The Insight Card generates and persists on the deployed stack for a known artwork (306240), and the second visit is served from the database
-- [ ] A push to the deploying branch redeploys through GitHub Actions, with no manual step
-- [ ] Migrations run with `alembic upgrade head` against the deployed database
+- [ ] A push to the deploying branch redeploys the front-end and the backend, with no manual step (each platform's GitHub integration; revised 2026-10-29 from "through GitHub Actions")
+- [ ] Migrations run with `alembic upgrade head` against the deployed database (from the development machine while the backend is on a free instance — doc 04, §8.2)
+- [ ] The database upgrade to a paid instance is scheduled before its 30-day free expiry
 - [ ] No secret in the repository, a workflow file, a build log or the front-end bundle (RNF-005)
 - [ ] An Azure budget alert covers the deployed usage
 
@@ -704,7 +720,7 @@ Formal treatment — probability, impact, mitigation — belongs to **doc 15 (Ri
 | Secrets leak through the deployment | 7 | New places a key can end up: workflow files, build logs, the front-end bundle (`NEXT_PUBLIC_*` values are public by construction). Phase 7 criterion; keys exposed during development are rotated first. |
 | The 60s client timeout change is forgotten | 6 | Decision 6. The failure mode is silent and misleading: every first visit appears to fail with a generic error while the backend is still working normally. |
 | Deferred Alt Text and ARIA read as unmet success criteria | — | Doc 01 (§7) criteria 3 and 4 are explicitly not met by this cycle (§2.2). This must be stated plainly in the final report rather than left for the committee to discover. |
-| No CI/CD pipeline exists | all | Doc 04 (§11). Every validation in this plan is manual; an unrun check is indistinguishable from a passing one. Phase 7 introduces a GitHub Actions deployment pipeline, a natural place to run the automated suites too. |
+| No CI/CD pipeline exists | all | Doc 04 (§11). Every validation in this plan is manual; an unrun check is indistinguishable from a passing one. Since Phase 7, deployment itself is automated by the platforms' GitHub integrations (doc 04, §8.2), but nothing runs the suites before a deploy; a GitHub Actions workflow that does is a Phase 8 candidate. |
 
 ---
 

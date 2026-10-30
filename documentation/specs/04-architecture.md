@@ -1,7 +1,7 @@
 # System Architecture — Art Archive AI
 
-**Version:** 1.2
-**Date:** 2026-10-28
+**Version:** 1.3
+**Date:** 2026-10-29
 **Status:** In review
 **Base documents:** [01 — Vision and Scope](./01-vision-scope.md), [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.4 — Authentication](./requeriments/02.4-authentication.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [03 — Use Cases](./03-use-cases.md)
 
@@ -12,6 +12,8 @@
 > **Change Note (2026-07-26, §7 correction):** the sequence diagrams in §7 are corrected to show **three fully independent HTTP requests** fired by the front-end on artwork visit — `GET /artworks/{artwork_id}/historical-context`, `GET /artworks/{artwork_id}/comparative-analysis`, and `GET /artworks/{artwork_id}/alt-text` (doc 07, §4) — instead of one bundled `GET /artworks/{artwork_id}/insight-card` request covering all three blocks. The historical-context and comparative-analysis responses are still recombined into a single Insight Card loading/displayed/error state, but that recombination now happens in the **front-end**, once both of its independent responses have settled (doc 06, §5) — the backend performs no such aggregation.
 >
 > **Change Note (2026-10-28, §8):** the backend port, previously "to be defined", is recorded as **8000** (doc 99, Decision 4). §8 still describes the development host; the public deployment target is decided in doc 99 (Phase 7) and recorded here before any infrastructure is created.
+>
+> **Change Note (2026-10-29, §8, §9, §11) — public deployment target recorded (doc 99, Phase 7).** By author decision, the front-end runs on **Vercel** and the backend and database on **Render**, starting on Render's free instance types and upgraded as needed, both deployed from the GitHub repository. (Railway, chosen first the same day, was dropped: its new signups were paused after a security incident.) §8 now describes two environments: the development host (unchanged, §8.1) and the public deployment (new, §8.2). Decision 2 (§9) holds for development only; Decision 7 records the public target. The `network_mode: host` and CI/CD risks (§11) are updated accordingly.
 
 ---
 
@@ -284,7 +286,11 @@ sequenceDiagram
 
 ## 8. Deployment Architecture
 
-The deployment environment remains **self-hosted via Docker Compose**, as in the MVP, with the addition of a container for PostgreSQL.
+Two environments: the development host (§8.1) and the public deployment (§8.2). Both run the same code from the same repository; only where each service runs differs.
+
+### 8.1 Development host
+
+The development environment remains **self-hosted via Docker Compose**, as in the MVP, with the addition of a container for PostgreSQL.
 
 ```mermaid
 flowchart TB
@@ -308,6 +314,57 @@ flowchart TB
 - The bind mount of `.firebaseAdminSDK.json` and all Firebase dependencies are removed from the `api` service from the very start of the new backend's implementation — there are no legacy users to validate, so there is no need to keep it during any transition window.
 - Backend environment variables (Azure OpenAI key, PostgreSQL connection string, Harvard API key) continue to be provided via `env_file`, never hardcoded (RNF-005).
 
+### 8.2 Public deployment
+
+Recorded 2026-10-29 by author decision (doc 99, Phase 7). The three services run on two managed platforms, each connected to the GitHub repository and redeploying on every push to the deploying branch.
+
+```mermaid
+flowchart TB
+    GitHub["GitHub repository<br/>branch main"]
+
+    subgraph Vercel["Vercel (Hobby)"]
+        webapp["webapp — Next.js<br/>repository root"]
+    end
+
+    subgraph Render["Render — same region"]
+        api["api — FastAPI web service<br/>built from backend/Dockerfile"]
+        db[("Render Postgres")]
+    end
+
+    GitHub -->|push| webapp
+    GitHub -->|push| api
+    Internet(("Internet")) -->|HTTPS| webapp
+    webapp -->|REST/HTTPS, public domain| api
+    api -->|SQL, private network| db
+    api -->|HTTPS| HarvardAPI["Harvard Art Museums API"]
+    api -->|HTTPS| AzureOpenAI["Azure OpenAI<br/>(Brazil South)"]
+```
+
+| Item | Decision |
+| ---- | -------- |
+| Front-end | Vercel, Hobby plan, project rooted at the repository root. Vercel builds Next.js itself; the root `Dockerfile` is not used |
+| Backend | Render web service (runtime Docker) with root directory `backend/`, built from `backend/Dockerfile`. Listens on the port Render provides in `PORT` (8000 when unset, as in development) |
+| Database | Render Postgres in the same region, reached by the backend through its internal URL. Render creates the database and its user at provisioning; that user owns the database and is not a superuser, which meets doc 99 (Phase 2) without an extra role, and `pgcrypto` — a trusted extension — is created by migration `0001` |
+| Migrations | `alembic upgrade head` run by the author from the development machine against the database's external URL, whenever a new migration exists. Render offers a pre-deploy command on paid instances only; once the backend is upgraded, the migration moves there |
+| Region | The same US East region for the backend and the database — the closest to Brazil, the Harvard API and Azure Brazil South |
+| Domain | The platforms' own HTTPS subdomains (`*.vercel.app`, `*.onrender.com`) for the first deployment. A custom domain is an open item: when chosen, it is recorded here and `FRONTEND_ORIGIN` / `NEXT_PUBLIC_API_URL` follow it |
+| Deploying branch | `main`, after `ai_expansion` is merged into it. Pushes to other branches produce Vercel preview deployments, which call the same backend and are refused by CORS — intended, as previews are not presented |
+| Secrets | Only in the platforms' variable stores (RNF-005): on Render, `HARVARD_API_KEY`, `DATABASE_URL`, the three `AZURE_OPENAI_*` variables and `FRONTEND_ORIGIN`; on Vercel, only the two public `NEXT_PUBLIC_*` values, which hold no secret |
+
+**Free-tier limits, accepted for the first deployment** (author decision, 2026-10-29):
+
+| Limit | Effect | Handling |
+| ----- | ------ | -------- |
+| The free database expires 30 days after creation, then is deleted after a 14-day grace period | Persisted Insight Card content would be lost, and regenerating it is billed again | Upgrade the database to a paid instance type, in place, **before day 30** — before the December presentations in any case |
+| The free web service sleeps after 15 minutes without traffic; waking takes about a minute | The grid's Axios instance waits 10 s (`src/libs/axios/axios.ts`), so the first visit after an idle period fails until reloaded | Wake the service (`/health`) before a presentation, or an external ping every ~10 minutes; upgrading the web service removes the limit |
+| No pre-deploy command on free instances | Migrations do not run on deploy | Run from the development machine (row "Migrations" above) |
+
+**Changes relative to §8.1:**
+
+- `docker-compose.yml` and the root `Dockerfile` are not used by the public deployment; they remain development artifacts.
+- The backend's start command reads `PORT` from the environment instead of a fixed port.
+- `NEXT_PUBLIC_API_URL` ends with `/`: the front-end requests relative paths such as `proxy/century` (no leading slash), which Axios appends to the base URL.
+
 ---
 
 ## 9. Architectural Decisions
@@ -315,11 +372,12 @@ flowchart TB
 | #   | Decision                                                                                                                                            | Rationale                                                                                                                                                                                                                                                                                                                                    |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | Replace the Flask proxy with a single new service (e.g. FastAPI), also absorbing the Harvard API proxy                                              | Avoids permanently maintaining two Python services; typing and support for asynchronous operations favor the AI pipeline, which involves potentially long external calls (RNF-002)                                                                                                                                                           |
-| 2   | PostgreSQL as an additional container in the existing `docker-compose.yml`, with no migration to the cloud                                          | Keeps operational complexity compatible with an academic project developed individually, within a one-semester timeline                                                                                                                                                                                                                      |
+| 2   | PostgreSQL as an additional container in the existing `docker-compose.yml`, with no migration to the cloud — **for the development host (§8.1); superseded for the public deployment by Decision 7** | Keeps operational complexity compatible with an academic project developed individually, within a one-semester timeline                                                                                                                                                                                                                      |
 | 3   | Every call to Azure OpenAI and to the Harvard API happens exclusively on the backend                                                                | RNF-005 — no API key may be exposed to the client                                                                                                                                                                                                                                                                                            |
 | 4   | The "check before generating" logic (on-demand persistence) lives entirely in the backend, never in the front-end, and runs independently per block | RF-001, RF-004, RF-013 — the front-end must not decide whether content needs to be generated; it only requests and receives the result                                                                                                                                                                                                       |
 | 5   | Firebase code and credentials are removed from the project as soon as the new authentication system is functional, with no transition period        | No Firebase data is preserved — there is no reason to keep legacy code or credentials beyond what is necessary for reference during initial development                                                                                                                                                                                      |
 | 6   | Soft delete via an `expired_at` timestamp column on `users` and `artwork_ai_content`, instead of physical `DELETE` statements                       | System-wide policy: no register is ever physically removed. Preserves audit history on `users` and avoids irrecoverably discarding AI-generated content on `artwork_ai_content`, which is costly to regenerate. Active registers have `expired_at IS NULL`; all reads of "current" data must filter on this condition (`05-database.md`, §6) |
+| 7   | Public deployment on managed platforms: the front-end on Vercel, the backend and PostgreSQL on Render, both redeploying from GitHub (§8.2)          | Author decision (2026-10-29, doc 99 Phase 7): no server to administer during the project's last weeks, HTTPS and deploy-on-push included, and the same Dockerfile and migrations as development. Starts at no cost (Render free instances, Vercel Hobby free for non-commercial use) with known limits (§8.2), upgraded when needed. A single VM remains the option for hosting several future projects together |
 
 ---
 
@@ -340,8 +398,8 @@ This architecture operates under the constraints already defined in previous doc
 Risks identified during this design phase; formal treatment (probability, impact, mitigation) is the responsibility of **doc 15 — Risk Management Plan**.
 
 - **Harvard proxy rewrite**: replacing `proxy.py` (currently functional) with the new single service introduces a risk of regression in MVP functionality (grid, filters, detail page). Recommended mitigation: parity tests for the new proxy before discontinuing Flask.
-- **`network_mode: host`**: the current Docker Compose configuration couples the services to the host network, which limits future portability to managed or multi-host environments.
-- **Absence of CI/CD**: there is no automated build/test/deploy pipeline today; manual configuration errors in the self-hosted deploy are an operational risk to consider.
+- **`network_mode: host`**: the current Docker Compose configuration couples the services to the host network, which limits future portability to managed or multi-host environments. Since 2026-10-29 this affects the development host only — the public deployment (§8.2) does not use `docker-compose.yml`.
+- **Absence of CI/CD**: deployment is automated since Phase 7 (each platform redeploys on push, §8.2), but no automated test runs before a deployment; a commit that breaks the build or the tests still reaches the deploying branch unchecked.
 
 ---
 
