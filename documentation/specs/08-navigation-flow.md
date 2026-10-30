@@ -1,6 +1,6 @@
 # Navigation and Flow — Art Archive AI
 
-**Version:** 1.2
+**Version:** 1.3
 **Date:** 2026-07-26
 **Status:** Under review
 **Base documents:** [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.3 — ARIA Accessibility](./requeriments/02.3-aria-accessibility.md), [02.4 — Authentication](./requeriments/02.4-authentication.md), [03 — Use Cases](./03-use-cases.md), [06 — Persistence Flow](./06-persistence-flow.md), [07 — API Contract](./07-api-contract.md)
@@ -8,6 +8,8 @@
 > **Change Note (2026-07-26):** requirement IDs throughout this document have been remapped from the original flat `02-requirements.md` numbering to the current split numbering (docs 02.1–02.5) — the numbers no longer align 1:1 with the previous revision. The Insight Card state model (§6) is clarified to reflect that, although the two Insight Card blocks are checked and generated independently on the backend (RF-001), the front-end still only exposes three states and never renders one block before the other.
 >
 > **Change Note (2026-07-26, v1.2):** §6 is corrected — the Insight Card consumes **two independent endpoints**, `GET /artworks/{artwork_id}/historical-context` and `GET /artworks/{artwork_id}/comparative-analysis` (doc 07, §4), fired by the front-end in parallel, not a single bundled `GET /artworks/{artwork_id}/insight-card` request. The three front-end states (Loading/Displayed/Error) are unchanged, but they are now produced by the front-end recombining these two independent responses (doc 06, §5) rather than by a single backend-aggregated response.
+>
+> **Change Note (2026-10-30, v1.3):** §6 is updated for two changes of the same day. (1) Each block is read with a `GET` and, when that returns `null`, generated with a `POST` carrying the artwork's image (doc 07 v2.4; doc 06 v2.4, §5). (2) The Insight Card is displayed as two titled sections, "Context Information" and "Comparative Analysis" (RF-005). The three front-end states are unchanged: both sections load, appear and fail together.
 
 ---
 
@@ -109,7 +111,7 @@ The screen flow (Login → Sign Up → Forgot Password → Change Password) rema
 
 ## 6. Detailed Flow — Insight Card States
 
-The Insight Card does not introduce a new route — it is a region with three possible **front-end** states within the Artwork Details screen (2.5), consuming **two independent endpoints** fired in parallel: `GET /artworks/{artwork_id}/historical-context` and `GET /artworks/{artwork_id}/comparative-analysis` (doc 07, §4). The backend checks and generates each block independently, behind its own request, with no awareness of the other (RF-001, doc 06 §2/§3) — the front-end is the one that recombines the two responses (doc 06, §5) and only ever transitions once, from Loading to either Displayed or Error, once **both** requests have settled; it never shows one block before the other.
+The Insight Card does not introduce a new route — it is a region with three possible **front-end** states within the Artwork Details screen (2.5), consuming **two independent blocks** loaded in parallel: `GET /artworks/{artwork_id}/historical-context` and `GET /artworks/{artwork_id}/comparative-analysis`, each followed by its `POST` when the block is not persisted yet (doc 07, §4; doc 06, §5). It is displayed as two titled sections, "Context Information" (historical context) and "Comparative Analysis" (RF-005), which share the three states below. The backend checks and generates each block independently, behind its own request, with no awareness of the other (RF-001, doc 06 §2/§3) — the front-end is the one that recombines the two responses (doc 06, §5) and only ever transitions once, from Loading to either Displayed or Error, once **both** requests have settled; it never shows one block before the other.
 
 ```mermaid
 stateDiagram-v2
@@ -122,9 +124,9 @@ stateDiagram-v2
 
 | State     | Description                                                                                                                                                      | Requirement    |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
-| Loading   | Displayed while both requests are in flight (client-side); covers both blocks at once                                                                            | RF-006         |
-| Displayed | At least one of the two responses has content; only the non-empty block(s) are rendered, no placeholder for the other. Content taller than about six lines starts collapsed, toggled by "See more" / "See less" — a presentation detail within this state, not a state of its own | RF-001, RF-005 |
-| Error     | Both responses ended up without content — standard message, or the timeout-specific message if both were `504 GENERATION_TIMEOUT`; rest of page stays functional | RF-007         |
+| Loading   | Displayed while either block is still loading (client-side); both sections show it at once, each on its heading row                                              | RF-006         |
+| Displayed | At least one of the two blocks has content; only the non-empty block's section is rendered, title included, with no placeholder for the other. A section whose content is taller than about six lines starts collapsed, toggled by its own "See more" / "See less" — a presentation detail within this state, not a state of its own | RF-001, RF-005 |
+| Error     | Both blocks ended up without content — a single "Context Information" section with the standard message, or the timeout-specific message if both were `504 GENERATION_TIMEOUT`; no "Comparative Analysis" section; rest of page stays functional | RF-005, RF-007 |
 
 The three states must be correctly announced by assistive technology via `aria-live="polite"` (RF-015) — see doc 02.3, RF-015.
 
