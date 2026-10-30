@@ -6,6 +6,8 @@ import SkeletonLoader from "../../../components/skeletonLoader";
 import axiosInstance from "../../../libs/axios/axios";
 import { capitalizeWords, getContrastYIQ, hexToRgb, themeTailwindColorsToHex } from "../../util/converters";
 import { ImageDetails, RecordDetails } from "../../util/models/models";
+import InsightCard from "./components/insightCard/insightCard";
+import { useInsightCard } from "./components/insightCard/useInsightCard";
 import TruncatedTextWithTooltip from "./components/truncatedTextWithTooltip";
 import BirthIcon from "./icons/birthIcon";
 import DeathIcon from "./icons/deathIcon";
@@ -17,6 +19,22 @@ export default function Object({ params }: { params: { objectId: string } }) {
   // const resizerRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [objectImages, setObjectImages] = useState<ImageDetails[]>([]);
+
+  // Fired on page load, in parallel with the artwork's own details (doc 06, §5)
+  const insightCard = useInsightCard(params.objectId);
+
+  // Tracked in state rather than read as `window.innerWidth` during render:
+  // the latter is evaluated on the server during SSR, where `window` is undefined.
+  const [isNarrowViewport, setIsNarrowViewport] = useState<boolean>(false);
+
+  useEffect(() => {
+    const handleResize = () => setIsNarrowViewport(window.innerWidth < 1500);
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const getObjectDetails = async (): Promise<RecordDetails | null> => {
     setIsLoading(true);
@@ -101,9 +119,7 @@ export default function Object({ params }: { params: { objectId: string } }) {
     <div ref={containerRef} className="flex w-full h-full overflow-y-hidden relative text-almost-white">
       {/* SIDE MENU - LEFT SIDE */}
       <div
-        className={`bg-silver-gray h-full p-6 flex flex-col min-w-[330px] ${
-          window.innerWidth < 1500 ? "w-[30%]" : "w-[20%]"
-        }`}
+        className={`bg-silver-gray h-full p-6 flex flex-col min-w-[330px] ${isNarrowViewport ? "w-[30%]" : "w-[20%]"}`}
       >
         <div className="flex flex-col gap-1 border-l-[6px] pl-4 border-golden-yellow h-fit mb-6">
           {!isLoading && object ? (
@@ -368,6 +384,9 @@ export default function Object({ params }: { params: { objectId: string } }) {
                   <p className="text-md">{object.description}</p>
                 </div>
               )}
+
+              {/* After the artwork's own description, by author decision (RNF-007, doc 02.5) */}
+              <InsightCard state={insightCard} />
 
               {object.contextualtext && (
                 <div className="w-full flex flex-col gap-4">

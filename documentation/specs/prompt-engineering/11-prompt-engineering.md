@@ -1,7 +1,7 @@
 # Prompt Engineering — Art Archive AI
 
-**Version:** 3.0
-**Date:** 2026-07-26
+**Version:** 3.1
+**Date:** 2026-10-27
 **Status:** In review — base prompts subject to iterative refinement
 **Base documents:** [02.1 — Insight Card](../requeriments/02.1-insight-card.md), [02.2 — Alt Text](../requeriments/02.2-alt-text.md), [02.5 — Non-Functional](../requeriments/02.5-non-functional.md), [05 — Database](../05-database.md), [06 — Persistence Flow](../06-persistence-flow.md), [09 — AI Pipeline](../09-ai-pipeline.md)
 **Family documents:** [11.1 — Historical Context Prompt](./11.1-historical-context-prompt.md), [11.2 — Comparative Analysis Prompt](./11.2-comparative-analysis-prompt.md), [11.3 — Alt Text Prompt](./11.3-alt-text-prompt.md)
@@ -37,33 +37,38 @@ This applies equally to all three prompts (docs 11.1, 11.2, 11.3).
 
 ---
 
-## 3. Common Call Shape (Azure OpenAI Chat Completions)
+## 3. Common Call Shape (Azure OpenAI Responses API)
 
-All three prompts — `historical_context`, `comparative_analysis`, and `alt_text` — are sent through the same request shape:
+> **Revised 2026-10-27:** the call moved from Chat Completions to the **Responses API**, the only API offering `web_search` (RF-009); the image is sent as a base64 `data:` URL because Azure cannot fetch Harvard image URLs (doc 09, §4 and §6). Neither the system message, the user template nor the schema changed, so no `prompt_version` is bumped (Section 4: infrastructure change).
+
+`historical_context` and `comparative_analysis` are sent through the same request shape:
 
 ```json
 {
-  "model": "gpt-4o",
+  "model": "<AZURE_OPENAI_DEPLOYMENT>",
   "temperature": 0.35,
-  "max_tokens": "<sized per prompt — see the prompt's own document>",
-  "response_format": {
-    "type": "json_schema",
-    "json_schema": { "...": "the prompt's own Output JSON Schema" }
-  },
-  "messages": [
-    { "role": "system", "content": "<the prompt's own System Message>" },
+  "max_output_tokens": "<sized per prompt — see the prompt's own document>",
+  "instructions": "<the prompt's own System Message>",
+  "input": [
     {
       "role": "user",
       "content": [
-        { "type": "text", "text": "<the prompt's own filled-in User Message>" },
-        { "type": "image_url", "image_url": { "url": "<image_url of the artwork>" } }
+        { "type": "input_text", "text": "<the prompt's own filled-in User Message>" },
+        { "type": "input_image", "image_url": "data:image/jpeg;base64,<artwork image>" }
       ]
     }
-  ]
+  ],
+  "tools": [{ "type": "web_search" }],
+  "include": ["web_search_call.action.sources"],
+  "text": {
+    "format": { "type": "json_schema", "name": "<schema name>", "strict": true, "schema": { "...": "the prompt's own Output JSON Schema" } }
+  }
 }
 ```
 
-What varies per prompt (system message, user template, schema, `max_tokens`) is defined in that prompt's own document (11.1 / 11.2 / 11.3, each Section 4). `temperature` is shared across all three as a starting point (Section 5).
+`alt_text` (deferred this cycle, doc 99 §2.2) needs no web search; its call shape is settled when it is resumed.
+
+What varies per prompt (system message, user template, schema, `max_output_tokens`) is defined in that prompt's own document (11.1 / 11.2 / 11.3, each Section 4). `temperature` is shared as a starting point (Section 5).
 
 ---
 
@@ -101,6 +106,7 @@ Prompt-specific refinement candidates (e.g., structural reinforcement of `compar
 | ------- | ---------- | ---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
 | `2.0`   | 2026-07-26 | Split the single combined prompt into three independent prompts (content-level split)    | Align with RF-001 (independent blocks) and RF-013 (dedicated Alt Text call)     |
 | `3.0`   | 2026-07-26 | Split the file itself into this core document plus 11.1 / 11.2 / 11.3 (file-level split) | Let each prompt's text and version history evolve and be reviewed independently |
+| `3.1`   | 2026-10-27 | Common call shape moved to the Responses API, image sent as base64 (Section 3) | `web_search` exists only there; Azure cannot fetch Harvard image URLs (doc 09 v2.2) |
 
 > This log tracks the **document's own** revisions (purpose, conventions, strategy). Each prompt's **content** version log (`v1`, `v2`, ...) lives in its own document (Section 4 above).
 

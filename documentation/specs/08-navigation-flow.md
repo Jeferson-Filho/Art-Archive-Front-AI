@@ -123,7 +123,7 @@ stateDiagram-v2
 | State     | Description                                                                                                                                                      | Requirement    |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------- |
 | Loading   | Displayed while both requests are in flight (client-side); covers both blocks at once                                                                            | RF-006         |
-| Displayed | At least one of the two responses has content; only the non-empty block(s) are rendered, no placeholder for the other                                            | RF-001, RF-005 |
+| Displayed | At least one of the two responses has content; only the non-empty block(s) are rendered, no placeholder for the other. Content taller than about six lines starts collapsed, toggled by "See more" / "See less" — a presentation detail within this state, not a state of its own | RF-001, RF-005 |
 | Error     | Both responses ended up without content — standard message, or the timeout-specific message if both were `504 GENERATION_TIMEOUT`; rest of page stays functional | RF-007         |
 
 The three states must be correctly announced by assistive technology via `aria-live="polite"` (RF-015) — see doc 02.3, RF-015.
@@ -141,7 +141,7 @@ flowchart LR
     AdminDetail -->|"Regenerate (optional)"| AdminDetail
 ```
 
-> **Pending dependency:** access to `/admin/*` requires the distinction of administrative privilege (`is_admin`), which is not yet defined in the schema — a pending issue already recorded in doc 07 (§8, item 1). Navigation to this section must be blocked until this definition is resolved.
+> **Pending dependency:** access to `/admin/*` requires the distinction of administrative privilege (`is_admin`), which is not yet defined in the schema — a pending issue tracked in doc 00 (§7), with this section as its source. Navigation to this section must be blocked until this definition is resolved. The administrative panel is deferred this cycle (doc 99, §2.2).
 
 ---
 

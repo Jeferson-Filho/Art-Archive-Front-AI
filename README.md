@@ -40,22 +40,23 @@ The application was built as a **Minimum Viable Product (MVP)** to provide a sol
    ```bash
    npm install
    ```
-3. Set up the Python-based proxy (First time):
+3. Set up the backend (first time):
 
    ```bash
-   cd proxy/
-   python -m venv artArchive_python
-   source artArchive_python/bin/activate
+   cd backend/
+   python -m venv venv
+   source venv/Scripts/activate   # Linux/macOS: source venv/bin/activate
    pip install -r requirements.txt
-   python proxy.py
+   cp .env.template .env          # then fill in HARVARD_API_KEY
+   uvicorn app.main:app --port 8000
    ```
 
-   After already set up the venv, run:
+   Once the venv exists, run:
 
    ```bash
-   cd proxy/
-   source artArchive_python/bin/activate
-   python proxy.py
+   cd backend/
+   source venv/Scripts/activate
+   uvicorn app.main:app --port 8000
    ```
 
 4. Run the development server:
@@ -93,7 +94,7 @@ To create a commit:
 Art-Archive-Front/
 ├── docker-compose.yml    # Docker configuration
 ├── documentation/        # Contains diagrams, notes, and project documentation
-├── proxy/                # Python-based proxy for backend requests
+├── backend/              # FastAPI service: Harvard proxy, AI pipeline, persistence, auth
 ├── src/                  # Frontend source files
 │   ├── components/       # Reusable UI components
 │   ├── app/              # Next.js routing and pages
@@ -108,7 +109,7 @@ Art-Archive-Front/
 
 ### Key Files:
 
-- **`proxy.py`**: Handles backend operations like API request redirection and data normalization.
+- **`backend/app/api/harvard_proxy.py`**: Forwards and normalizes Harvard Art Museums API requests.
 - **`filterSideMenu.tsx`**: Implements advanced filtering functionality.
 - **`imageViewer.tsx`**: Provides interactive image viewing with tooltips.
 
@@ -119,6 +120,13 @@ Art-Archive-Front/
 - [Figma Prototype](https://www.figma.com/design/MsPqVyoHSHn9voeHd1Ebfy/Art-Archive?node-id=0-1&t=zHTmqiityQr73TZE-1)
 - [Harvard Art Museum API](https://github.com/harvardartmuseums/api-docs)
 - [Activity Diagrams and Documentation](./documentation/)
+- [Specifications (Spec-Driven Development)](./documentation/specs/) — the API contract is [doc 07](./documentation/specs/07-api-contract.md)
+- **Interactive API docs** — with the backend running, Swagger UI at `http://localhost:8000/docs` (generated from the code)
+- **Postman collection** — [`backend/postman/`](./backend/postman/), with tests on every request. Import it into Postman, or run it from the command line:
+  ```bash
+  npx newman run backend/postman/art-archive-api.postman_collection.json \
+    -e backend/postman/art-archive-local.postman_environment.json
+  ```
 
 ---
 

@@ -39,3 +39,10 @@ next-env.d.ts
 # Python Enviroment
 */artArchive_python
 *venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# TypeScript incremental build cache
+*.tsbuildinfo

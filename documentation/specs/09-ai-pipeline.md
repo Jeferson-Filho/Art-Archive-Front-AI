@@ -1,7 +1,7 @@
 # AI Pipeline — Insight Card and Alt Text — Art Archive AI
 
-**Version:** 2.1
-**Date:** 2026-07-26
+**Version:** 2.2
+**Date:** 2026-10-27
 **Status:** In Review
 **Base Documents:** [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md), [06 — Persistence Flow](./06-persistence-flow.md)
 
@@ -95,13 +95,15 @@ Before any call to the LLM, each of the three functions independently verifies t
 
 - **Failure at this step** → the function raises `ImageUnavailableError`, stopping before incurring any LLM call cost.
 
+**Revision (2026-10-27, v2.2) — the image is downloaded, not just checked.** Azure OpenAI cannot fetch Harvard image URLs itself: passing the URL returned `400 "Failed to download image"` on Chat Completions and `403 StorageAccessDenied` on the Responses API (three-call test, 2026-10-27). Step 1 therefore downloads the image (resized by Harvard's image service to at most 768px, about 100 KB) and hands it to Step 3 as a base64 `data:` URL. The download replaces the `HEAD` check and plays the same role: an artwork without `primaryimageurl`, or a download that fails or does not return an image, raises `ImageUnavailableError` before any LLM cost.
+
 ---
 
 ## 5. Step 2 — Prompt Assembly
 
 Each function assembles its **own** system + user prompt pair — see doc 11 for the exact text and versioning of each of the three prompts. Unlike the single combined prompt in the previous version of this document, there is no shared prompt text between the three calls beyond the common metadata-formatting convention.
 
-**Structured output per call:** each of the three calls uses **structured output via JSON Schema** (function calling / `response_format: json_schema`), scoped to that call's own fields:
+**Structured output per call:** each of the three calls uses **structured output via JSON Schema**, scoped to that call's own fields. On the Responses API (§6) this is `text.format` with `type: "json_schema"` and `strict: true`; confirmed to work together with image input and `web_search` (2026-10-27):
 
 ```json
 // generate_historical_context / generate_comparative_analysis
@@ -128,7 +130,7 @@ This approach replaces free-text parsing and drastically reduces the incidence o
 
 | Parameter    | Suggested Value                                                                                                              | Rationale                                                                                                                                                                                                                        |
 | ------------ | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Model        | Multimodal Azure OpenAI model available under the educational subscription (e.g., GPT-4o)                                    | Supports image input + structured output in a single call                                                                                                                                                                        |
+| Model        | **`gpt-4.1-mini`** (2025-04-14) for development and testing; **`gpt-4.1`** if its quality justifies it (author decision, 2026-10-27 — see "Deployment" below) | Supports image input + structured output. Chosen over `gpt-4o` for stronger instruction-following, which the "return empty rather than invent" rules of doc 11 depend on; the final model is settled by the side-by-side comparison of doc 11 (§5) |
 | Temperature  | Low (e.g., 0.3–0.4) for all three calls                                                                                      | Prioritizes factual accuracy over creativity — reduces the risk of historical hallucination (relevant to doc 14, Quality Evaluation)                                                                                             |
 | `max_tokens` | Sized per call: higher for `historical_context`/`comparative_analysis` (e.g., 600–800), lower for `alt_text` (e.g., 150–200) | Each call now only produces its own field — no need for a single shared budget large enough for all three fields at once                                                                                                         |
 | Timeout      | Budget remaining within the shared 60s window (RNF-002), net of the time already spent in that call's Step 1                 | Each call independently respects the 60s ceiling; RNF-002's "shared window" means the overall visit is only a timeout if **none** of the triggered calls return in time — one call's timeout does not cancel or extend another's |
@@ -136,6 +138,47 @@ This approach replaces free-text parsing and drastically reduces the incidence o
 | Web search   | Enabled for `generate_historical_context` and `generate_comparative_analysis` only                                           | RF-009 — open web search, no predefined source list, used to enrich these two blocks; not required for `alt_text`, which describes only the visible image                                                                        |
 
 - **Failure at this step** (timeout or provider error) → the function raises `LLMTimeoutError` or `LLMProviderError`, scoped to that call only. A failure in one call has no effect on the other two.
+
+**Deployment (author decision, 2026-10-27).** Azure OpenAI resource in the `rg-art-archive` resource group, Brazil South:
+
+| Setting | Value | Note |
+| ------- | ----- | ---- |
+| Deployment name | `gpt-4.1-mini-art-archive` | The code addresses the model by this name (`AZURE_OPENAI_DEPLOYMENT`), not by the model's. A later `gpt-4.1` deployment is a one-variable change |
+| Model / version | `gpt-4.1-mini`, 2025-04-14 | Image input and structured output confirmed in Microsoft's model documentation |
+| Deployment type | **Global Standard** | The only type offering `gpt-4.1-mini` in Brazil South; Standard (regional) and Data Zone Standard do not. Processing may therefore occur in any Azure region — acceptable, since the data sent is public Harvard metadata and images |
+| Rate limit | ~~15,000~~ **50,000** tokens per minute (raised 2026-10-27) | 15k drew `429` after two consecutive calls with web search |
+| Content safety | Custom guardrail `art-archive-guardrails` (replaces `DefaultV2`, 2026-10-27) | Created to relax output thresholds; its effect is not yet confirmed — see `documentation/Challenges.txt` |
+
+**Call shape (settled 2026-10-27, three-call test).** `web_search` exists only in the **Responses API**, so both text blocks are generated there, not on Chat Completions:
+
+```json
+POST {AZURE_OPENAI_ENDPOINT}/openai/v1/responses
+{
+  "model": "<AZURE_OPENAI_DEPLOYMENT>",
+  "instructions": "<the prompt's System Message>",
+  "input": [{ "role": "user", "content": [
+    { "type": "input_text", "text": "<the prompt's filled-in User Message>" },
+    { "type": "input_image", "image_url": "data:image/jpeg;base64,..." }
+  ]}],
+  "tools": [{ "type": "web_search" }],
+  "include": ["web_search_call.action.sources"],
+  "text": { "format": { "type": "json_schema", "name": "...", "strict": true, "schema": { } } },
+  "temperature": 0.35,
+  "max_output_tokens": 700
+}
+```
+
+Observed in the test (artwork 306240): the combination of image, `web_search` and strict JSON Schema completes, with about 3,800 input and 400 output tokens and one web search per block. With structured output the model emits **no `url_citation` annotations**; `sources` is therefore the JSON field of the structured output, and every URL it held was among those the search returned.
+
+How the Responses API reports failure, and what Step 3 raises:
+
+| Provider outcome | Raised |
+| ---------------- | ------ |
+| No answer within the remaining budget | `LLMTimeoutError` |
+| Transport error, any non-`200` status — including `429` (rate limit) and `400 content_policy_violation` (image blocked by the content filter) | `LLMProviderError` |
+| `200` with `status: "incomplete"` — e.g. `incomplete_details.reason: "content_filter"`, output blocked — or no parsable output | `LLMIncompleteResponseError` (Step 4) |
+
+The content-filter outcomes are real, not hypothetical: in the test they blocked artworks depicting nudity and violence (image input) and, for one artwork, the answer built from web-search results (output). They are recorded with possible solutions in `documentation/Challenges.txt` and are **not handled beyond this mapping** in the first version (author decision, 2026-10-27): the block simply comes back empty.
 
 ---
 

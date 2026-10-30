@@ -1,7 +1,7 @@
 # Interface Specification — API Contract — Art Archive AI
 
-**Version:** 2.1
-**Date:** 2026-07-26
+**Version:** 2.3
+**Date:** 2026-10-27
 **Status:** In Review
 **Base Documents:** [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.4 — Authentication](./requeriments/02.4-authentication.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md), [06 — Persistence Flow](./06-persistence-flow.md)
 
@@ -35,6 +35,10 @@
 > Requirement IDs throughout this document have also been remapped from the original flat `02-requirements.md` numbering to the current split numbering (docs 02.1–02.5) — the numbers no longer align 1:1 with the previous revision.
 >
 > **Change Note (2026-07-26, v2.1):** the single `GET /artworks/{artwork_id}/insight-card` endpoint is replaced by **two independent endpoints**, one per Insight Card block: `GET /artworks/{artwork_id}/historical-context` and `GET /artworks/{artwork_id}/comparative-analysis`. This clarifies that the front-end fires **three fully independent requests** on artwork visit — one per block, including Alt Text — never a single request that bundles two blocks together (RF-001, RF-013). The historical-context and comparative-analysis blocks are still presented as one combined Insight Card region in the UI (RF-005, RF-006, RF-007), but that aggregation is now performed by the **front-end**, once both of its independent responses have settled — see doc 06 (§5) and doc 08 (§6).
+>
+> **Change Note (2026-10-27, v2.2):** two gaps surfaced while implementing doc 99 Phase 3 were resolved by author decision. (1) The per-block endpoints now return `502 HARVARD_API_ERROR` when Harvard fails while the artwork's existence is being checked — previously unspecified. (2) Framework-level errors (invalid parameters, unknown routes, wrong methods, unhandled exceptions) now use the standard envelope, adding `NOT_FOUND`, `METHOD_NOT_ALLOWED`, and `INTERNAL_ERROR` to the catalog and extending `VALIDATION_ERROR` beyond the auth endpoints (Section 6.1). Section 8's only pending issue is closed. Section 4 also records that Harvard signals a nonexistent artwork with HTTP `200` and an error body, not a `404`.
+>
+> **Change Note (2026-10-27, v2.3):** by author decision, a database that cannot be read on the per-block endpoints is handled as a missing block — the endpoint generates and returns a normal `200`, persisting nothing — instead of failing with `500 INTERNAL_ERROR` (Section 4; doc 06, §11).
 
 ---
 
@@ -85,13 +89,21 @@ Implements the per-block verification and generation logic specified in doc 06 (
 `historical_context` may be empty, with `historical_context_sources` empty in that case (RF-005, RF-010) — for insufficient information (RF-002, scenario 3), no appropriate source (RF-010, scenario 10.2), or a non-timeout technical failure (provider error, malformed response), all of which are treated identically at this endpoint: a `200` with empty content, never a `5xx`. This is a deliberate departure from the previous version of this contract, which used a `502 GENERATION_FAILED` for any generation failure: under RF-007, a non-timeout failure is never surfaced as an HTTP error, only as the block's absence.
 
 > **Note (RF-004, scenario 2):** if generation succeeds but persistence to the database fails, this endpoint still returns the generated content as part of a `200` — the persistence failure is logged on the backend and never exposed to the client (doc 06, §2).
+>
+> **Note (database unreadable, 2026-10-27):** if the database cannot be read for the initial check, the endpoint behaves as on a first visit — it generates and returns the block as a normal `200`, and persists nothing (doc 06, §2 and §11). A database outage never surfaces as an error from this endpoint.
 
 **Error responses**
 
-| Status | Code                 | When it occurs                                                                                              | Reference                                       |
-| ------ | -------------------- | ----------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| 404    | `ARTWORK_NOT_FOUND`  | The `artwork_id` does not exist in the Harvard Art Museums API (verified before triggering the AI Pipeline) | Edge case not covered by doc 06 — see Section 9 |
-| 504    | `GENERATION_TIMEOUT` | This specific call did not return within the 60-second window defined by RNF-002                            | RNF-002                                         |
+| Status | Code                 | When it occurs                                                                                                                       | Reference                          |
+| ------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| 400    | `VALIDATION_ERROR`   | `artwork_id` is not an integer                                                                                                       | Section 6 (framework-level errors) |
+| 404    | `ARTWORK_NOT_FOUND`  | The `artwork_id` does not exist in the Harvard Art Museums API (verified before triggering the AI Pipeline)                          | doc 06 §2                          |
+| 502    | `HARVARD_API_ERROR`  | The block is not persisted, and the Harvard Art Museums API fails while the artwork's existence is being checked (unreachable, timeout, error status, unexpected body) | doc 06 §2                          |
+| 504    | `GENERATION_TIMEOUT` | This specific call did not return within the 60-second window defined by RNF-002                                                    | RNF-002                            |
+
+Both `404` and `502` can only occur when the block is **not** yet persisted: an already-persisted block is served straight from the database, without consulting Harvard at all (doc 06 §7, RNF-001).
+
+**Detecting a nonexistent artwork.** The Harvard Art Museums API does not answer a nonexistent object with a `404`: it returns HTTP `200` with the body `{"error": "Not found"}` (observed 2026-10-27, including for non-numeric and negative IDs). Absence is therefore read from the response body; a `404` status is treated the same way, in case that behaviour changes.
 
 A `504` from this endpoint does not, by itself, mean the Insight Card shows an error — RF-007's timeout-specific message only appears once the front-end observes that **both** this endpoint and `GET /artworks/{artwork_id}/comparative-analysis` resolved without content (doc 06, §5).
 
@@ -116,10 +128,12 @@ Mirrors `GET /artworks/{artwork_id}/historical-context` above in every respect, 
 
 **Error responses**
 
-| Status | Code                 | When it occurs                                                                   | Reference                                       |
-| ------ | -------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------- |
-| 404    | `ARTWORK_NOT_FOUND`  | The `artwork_id` does not exist in the Harvard Art Museums API                   | Edge case not covered by doc 06 — see Section 9 |
-| 504    | `GENERATION_TIMEOUT` | This specific call did not return within the 60-second window defined by RNF-002 | RNF-002                                         |
+| Status | Code                 | When it occurs                                                                                          | Reference                          |
+| ------ | -------------------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| 400    | `VALIDATION_ERROR`   | `artwork_id` is not an integer                                                                          | Section 6 (framework-level errors) |
+| 404    | `ARTWORK_NOT_FOUND`  | The `artwork_id` does not exist in the Harvard Art Museums API                                          | doc 06 §3                          |
+| 502    | `HARVARD_API_ERROR`  | The block is not persisted, and the Harvard Art Museums API fails while the artwork's existence is being checked | doc 06 §3                          |
+| 504    | `GENERATION_TIMEOUT` | This specific call did not return within the 60-second window defined by RNF-002                        | RNF-002                            |
 
 ---
 
@@ -276,15 +290,28 @@ The response is always `200` even if the email does not exist, so as not to expo
 
 ## 6. Error Catalog
 
-| Code                       | HTTP Status | Endpoints where it appears                                                                                                                |
-| -------------------------- | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `HARVARD_API_ERROR`        | 502         | `GET /proxy/{path}`                                                                                                                       |
-| `ARTWORK_NOT_FOUND`        | 404         | `GET /artworks/{artwork_id}/historical-context`, `GET /artworks/{artwork_id}/comparative-analysis`, `GET /artworks/{artwork_id}/alt-text` |
-| `GENERATION_TIMEOUT`       | 504         | `GET /artworks/{artwork_id}/historical-context`, `GET /artworks/{artwork_id}/comparative-analysis`                                        |
-| `EMAIL_ALREADY_EXISTS`     | 409         | `POST /auth/register`                                                                                                                     |
-| `VALIDATION_ERROR`         | 400         | `POST /auth/register`, `POST /auth/login`                                                                                                 |
-| `INVALID_CREDENTIALS`      | 401         | `POST /auth/login`                                                                                                                        |
-| `INVALID_OR_EXPIRED_TOKEN` | 400         | `POST /auth/password-reset/confirm`                                                                                                       |
+| Code                       | HTTP Status | Endpoints where it appears                                                                                                                         |
+| -------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `HARVARD_API_ERROR`        | 502         | `GET /proxy/{path}`, `GET /artworks/{artwork_id}/historical-context`, `GET /artworks/{artwork_id}/comparative-analysis`                            |
+| `ARTWORK_NOT_FOUND`        | 404         | `GET /artworks/{artwork_id}/historical-context`, `GET /artworks/{artwork_id}/comparative-analysis`, `GET /artworks/{artwork_id}/alt-text`          |
+| `GENERATION_TIMEOUT`       | 504         | `GET /artworks/{artwork_id}/historical-context`, `GET /artworks/{artwork_id}/comparative-analysis`                                                 |
+| `EMAIL_ALREADY_EXISTS`     | 409         | `POST /auth/register`                                                                                                                              |
+| `VALIDATION_ERROR`         | 400         | `POST /auth/register`, `POST /auth/login`, and any endpoint whose path or query parameters fail validation (e.g. a non-integer `artwork_id`) |
+| `INVALID_CREDENTIALS`      | 401         | `POST /auth/login`                                                                                                                                 |
+| `INVALID_OR_EXPIRED_TOKEN` | 400         | `POST /auth/password-reset/confirm`                                                                                                                |
+| `NOT_FOUND`                | 404         | Any route that does not exist                                                                                                                      |
+| `METHOD_NOT_ALLOWED`       | 405         | Any existing route called with a method it does not accept                                                                                         |
+| `INTERNAL_ERROR`           | 500         | Any endpoint, on an unexpected failure. The message is generic; details go to the backend log only                                                 |
+
+### 6.1 Framework-level errors (decided 2026-10-27)
+
+Section 1 requires **every** error to use the standard envelope. Errors raised by the web framework itself, rather than by an endpoint, would otherwise escape it: FastAPI answers an invalid path parameter with `422` and a body of its own, and an unknown route with `{"detail": "Not Found"}`. By author decision, they are mapped onto the envelope as follows:
+
+- **Invalid input** (a path or query parameter of the wrong type) → `400 VALIDATION_ERROR`, reusing the existing catalog code rather than introducing `422`. The rejected value is not echoed back in the message.
+- **Other framework HTTP errors** → the HTTP status unchanged, with the reason phrase as the code: `NOT_FOUND`, `METHOD_NOT_ALLOWED`.
+- **Unhandled exceptions** → `500 INTERNAL_ERROR`, with a generic message; the exception is logged on the backend and never exposed to the client. A failure to *read* the database on the per-block endpoints is not one of these: it is handled as a missing block (Section 4).
+
+The same decision extends `HARVARD_API_ERROR` to the per-block endpoints (Section 4), where Harvard is consulted to confirm the artwork exists.
 
 ---
 
@@ -302,9 +329,11 @@ The three endpoints above are fired by the front-end in parallel, as three indep
 
 ## 8. Identified Pending Issues
 
-1. **Artwork nonexistent in the Harvard API:** neither doc 06 flow explicitly models an `artwork_id` that does not exist in the Harvard Art Museums API — this document adds this case as `404 ARTWORK_NOT_FOUND` on all three per-block endpoints, verified before triggering any AI Pipeline call. Still not formalized as a node in doc 06's flowcharts — recommend adding it there before implementation.
+No open pending issues.
 
-I recommend resolving items 1 and 3 before moving forward with implementation (doc 99, Phase 2 and Phase 8).
+> **Resolved (2026-10-27):** _Artwork nonexistent in the Harvard API_ — this case, specified here as `404 ARTWORK_NOT_FOUND`, was never modeled as a node in doc 06's flowcharts. Doc 06 §2 and §3 now model it, together with the `502 HARVARD_API_ERROR` path for a Harvard failure during the same check (Section 6.1). Implemented in doc 99, Phase 3.
+
+> **Change Note (2026-10-17):** the closing line previously read "resolving items 1 and 3", referring to a three-item list. Items 2 and 3 of that list — the missing `password_reset_tokens` table and the bundling of Alt Text into the Insight Card response — were resolved in doc 05 v2.1 and in this document's own v2.1 revision respectively, and were removed from the list without the closing line being updated. The phase reference, which pointed at a document that did not yet exist, is now resolved against doc 99 v1.0.
 
 ---
 

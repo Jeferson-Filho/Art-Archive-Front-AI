@@ -1,19 +1,36 @@
 version: "3.9"
 services:
+  db:
+    restart: always
+    image: "postgres:18-alpine"
+    environment:
+      POSTGRES_DB: art_archive
+      POSTGRES_USER: art_archive_user
+      # Supplied via the shell environment or a .env file beside this one —
+      # never hardcoded here (RNF-005)
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD before running}
+    ports:
+      - "5432:5432"
+    network_mode: "host"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U art_archive_user -d art_archive"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
   api:
     restart: always
     image: "art-archive-api"
-    build: ./proxy
+    build: ./backend
     ports:
-      - "5000:5000"
+      - "8000:8000"
     network_mode: "host"
-    volumes:
-      - type: bind
-        source: ./proxy/.firebaseAdminSDK.json
-        target: /usr/src/app/.firebaseAdminSDK.json
-      - type: bind
-        source: ./proxy/.env
-        target: /usr/src/app/.env
+    env_file:
+      - path: ./backend/.env
+    depends_on:
+      db:
+        condition: service_healthy
   webapp:
     restart: always
     image: "art-archive-webapp"
@@ -23,3 +40,6 @@ services:
     network_mode: "host"
     env_file:
       - path: .env.production
+
+volumes:
+  postgres_data:

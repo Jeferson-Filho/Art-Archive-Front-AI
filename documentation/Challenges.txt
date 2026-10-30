@@ -61,3 +61,47 @@ Detalhes da obra:
     - Vision OpenAI description
     - 
 
+
+Núcleo de IA (Azure OpenAI — contexto histórico + análise comparativa):
+
+    Contexto: teste de viabilidade da API em 27/10/2026, com gpt-4.1-mini (deploy gpt-4.1-mini-art-archive, Global Standard, Brazil South).
+    Decisão: a primeira versão do pipeline foi feita para funcionar com obras sem risco de conteúdo (ex.: 306240, "Fish, after Egyptian Wall Painting").
+    Os bloqueios abaixo NÃO são tratados nessa versão: a obra afetada simplesmente recebe um bloco vazio, que não é persistido (doc 99, Decisão 10).
+
+    RESOLVIDOS
+    - Azure não baixa imagens do Harvard
+        Passando a URL da imagem, o Azure respondia 400 "Failed to download image" (Chat Completions) e 403 StorageAccessDenied (Responses API). O backend passou a baixar a imagem (até 768px, ~100 KB) e enviá-la como data URL em base64 (doc 09 §4).
+    - Web search só existe na Responses API
+        Os specs assumiam Chat Completions. O teste confirmou que imagem + web_search + saída estruturada (json_schema strict) funcionam juntos na Responses API, que virou o formato da chamada (doc 09 §6, doc 11 §3).
+    - Fontes não vêm como citações
+        Com saída estruturada o modelo não gera anotações url_citation. As fontes vêm do campo "sources" do JSON; no teste, todas estavam entre as URLs que a busca realmente retornou.
+    - Limite de tokens por minuto (429)
+        Com 15k TPM, duas chamadas seguidas com busca já davam 429 (a busca consome tokens que não aparecem no "usage"). Limite aumentado para 50k TPM.
+
+    BLOQUEIOS REPORTADOS (A TRATAR)
+    - Filtro de conteúdo na imagem de entrada
+        Obras com nudez ou violência são recusadas antes do modelo ver a imagem: 400 content_policy_violation. Ex.: 228651 (Renoir, "Seated Bather") e 234261 (Callot, "Duel with Swords and Daggers", gravura de duelo). Acontece com ou sem web search.
+        Possíveis soluções:
+            * Subir os limiares de Sexual e Violência para "Bloqueio alto" no guardrail (pode não bastar para imagens).
+            * Se a imagem for bloqueada, tentar de novo sem a imagem, só com metadados + busca (exige mudar doc 09 §8, que hoje proíbe retentativa).
+            * Pedir à Microsoft a configuração de filtro modificada (formulário de acesso), justificando o uso educacional/museológico.
+    - Filtro de conteúdo na resposta (texto vindo da busca)
+        Para 299843 (Van Gogh, "Self-Portrait Dedicated to Paul Gauguin") a resposta volta "I'm sorry, but I cannot assist with that request." com status "incomplete" e reason "content_filter". O filtro de saída marcou hate = medium num trecho de ~26 mil caracteres, que é o conteúdo trazido pela busca, não o texto do modelo (28 tokens).
+        Foi criado o guardrail próprio "art-archive-guardrails" e aplicado à implantação, mas até o último teste o bloqueio continuava igual (configuração não salva como esperado ou propagação pendente — a confirmar).
+        Possíveis soluções:
+            * Conferir no guardrail se Ódio está mesmo em "Bloqueio alto" (ou trocar a ação para "Anotar"), e retestar.
+            * Retentar sem web search (modelo + metadados), aceitando ficar sem fontes nesse caso (afeta RF-009/RF-010).
+            * Recuperação própria de fontes (Wikipedia + página do Harvard) no lugar do web_search. Testado: funciona e é barato, mas a busca na Wikipedia por título/artista trouxe páginas genéricas ou nada, e o modelo citou fontes que não sustentavam o que escreveu.
+    - Modelo nem sempre usa a busca
+        Sem forçar, o modelo às vezes responde sem buscar (num_requests = 0) e sem fontes. Forçar com tool_choice "required" funcionou no teste.
+    - Qualidade das fontes
+        A busca traz sites de baixa qualidade junto com museus (ex.: artera.ae, notablepeopleproject.org), e o modelo escolheu um deles.
+        Possíveis soluções:
+            * Validar no backend que cada URL de "sources" está entre as que a busca retornou (include web_search_call.action.sources).
+            * Lista de domínios preferidos no prompt (museus, Wikipedia, Smarthistory...).
+        Primeira geração real pelo backend (306240, 28/10/2026): das 7 URLs de fonte distintas, 2 do tate.org.uk deram 404 (URL provavelmente inventada ou desatualizada); metmuseum.org (429) e britannica.com (403) bloquearam a checagem automática. A validação contra a lista da busca resolveria o caso das inventadas.
+    - Alucinação
+        No playground o modelo afirmou que "Gauguin vendeu o quadro por 300 francos", sem confirmação. Material para o doc 14 (avaliação de qualidade).
+    - Custo da busca
+        Cada bloco usa ~3,8 mil tokens de entrada, ~400 de saída e 1 busca. O custo em tokens é baixo; o custo por busca ainda precisa ser confirmado na tabela de preços.
+

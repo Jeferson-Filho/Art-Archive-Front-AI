@@ -53,6 +53,11 @@ export default function Home() {
 
   const [columns, setColumns] = useState<ImageObject[][]>([]);
 
+  // Tracked in state rather than read as `window.innerWidth` during render:
+  // the latter is evaluated on the server during SSR, where `window` is undefined.
+  // Starts at 0 and is filled on mount, so server and first client render agree.
+  const [viewportWidth, setViewportWidth] = useState<number>(0);
+
   const url = typeof window !== "undefined" && window.location.href ? new URL(window.location.href) : null;
   const [randomSeed] = useState(
     url && url.searchParams.get("seed")
@@ -203,14 +208,18 @@ export default function Home() {
   };
 
   useEffect(() => {
+    const handleResize = () => setViewportWidth(window.innerWidth);
+
+    handleResize();
+    window.addEventListener("resize", handleResize);
+
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  useEffect(() => {
     if (objects.length === 0) return;
     calculateColumns(numberColumns);
-    window.addEventListener("resize", () => calculateColumns(numberColumns));
-
-    return () => {
-      window.removeEventListener("resize", () => calculateColumns(numberColumns));
-    };
-  }, [objects, numberColumns, window.innerWidth, isFilterOpen]);
+  }, [objects, numberColumns, viewportWidth, isFilterOpen]);
 
   useEffect(() => {
     async function fetchSession() {
