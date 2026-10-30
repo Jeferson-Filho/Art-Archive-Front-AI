@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { combineInsightCard } from "./combineInsightCard";
-import { fetchBlock } from "./insightCardApi";
+import { createApiLoader } from "./insightCardApi";
 import { createMockLoader, mockScenarioFromUrl } from "./insightCardMock";
 import { InsightCardState, LoadBlock } from "./types";
 
@@ -11,9 +11,10 @@ export const INSIGHT_CARD_SOURCE: "api" | "mock" =
   process.env.NEXT_PUBLIC_INSIGHT_CARD_SOURCE === "mock" ? "mock" : "api";
 
 /**
- * Fires the two block requests in parallel as soon as the artwork page loads,
- * and combines them once both have settled (doc 06 §5; RF-001, RF-006).
- * Neither request waits for the other, nor for the artwork's own details.
+ * Loads the two blocks in parallel as soon as the artwork page loads, and
+ * combines them once both have settled (doc 06 §5; RF-001, RF-006). Neither
+ * block waits for the other, nor for the page's own artwork details; a block
+ * that must be generated only waits for the image both blocks share.
  */
 export function useInsightCard(artworkId: string): InsightCardState {
   const [state, setState] = useState<InsightCardState>({ status: "loading" });
@@ -22,7 +23,8 @@ export function useInsightCard(artworkId: string): InsightCardState {
     let current = true;
     setState({ status: "loading" });
 
-    const load: LoadBlock = INSIGHT_CARD_SOURCE === "mock" ? createMockLoader(mockScenarioFromUrl()) : fetchBlock;
+    // A fresh loader per visit, so the image download is shared by this visit's two blocks only
+    const load: LoadBlock = INSIGHT_CARD_SOURCE === "mock" ? createMockLoader(mockScenarioFromUrl()) : createApiLoader();
 
     // Both loaders resolve to an outcome and never reject, so this waits for
     // both to settle — the Promise.allSettled behaviour doc 06 (§5) requires.
