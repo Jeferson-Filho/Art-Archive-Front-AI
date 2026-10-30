@@ -1,7 +1,7 @@
 # System Architecture — Art Archive AI
 
-**Version:** 1.3
-**Date:** 2026-10-29
+**Version:** 1.4
+**Date:** 2026-10-30
 **Status:** In review
 **Base documents:** [01 — Vision and Scope](./01-vision-scope.md), [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.4 — Authentication](./requeriments/02.4-authentication.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [03 — Use Cases](./03-use-cases.md)
 
@@ -14,6 +14,8 @@
 > **Change Note (2026-10-28, §8):** the backend port, previously "to be defined", is recorded as **8000** (doc 99, Decision 4). §8 still describes the development host; the public deployment target is decided in doc 99 (Phase 7) and recorded here before any infrastructure is created.
 >
 > **Change Note (2026-10-29, §8, §9, §11) — public deployment target recorded (doc 99, Phase 7).** By author decision, the front-end runs on **Vercel** and the backend and database on **Render**, starting on Render's free instance types and upgraded as needed, both deployed from the GitHub repository. (Railway, chosen first the same day, was dropped: its new signups were paused after a security incident.) §8 now describes two environments: the development host (unchanged, §8.1) and the public deployment (new, §8.2). Decision 2 (§9) holds for development only; Decision 7 records the public target. The `network_mode: host` and CI/CD risks (§11) are updated accordingly.
+>
+> **Change Note (2026-10-30, §7, §8.2, §9, §11) — the artwork image comes from the browser.** Deployed on Render, the backend gets `403` from Harvard's image server, so it can no longer download the image the AI Pipeline needs. By author decision, the front-end downloads it and sends it with a new `POST` per Insight Card block, while the `GET` only reads (doc 07 v2.4, doc 06 v2.4, doc 09 v2.3). §7.1 and §7.3 are redrawn, §8.2 records the image path, Decision 4 is clarified, the new Decision 8 records that downloading from Harvard's image service is not a call to the Harvard API (doc 00, §2 rule 3), and §11 adds the accepted risk of a client-supplied image.
 
 ---
 
@@ -148,53 +150,55 @@ flowchart LR
 sequenceDiagram
     actor V as Visitor
     participant FE as Frontend
+    participant IMG as Harvard image service
     participant BE as Backend (Persistence)
     participant AI as Backend (AI Pipeline)
     participant LLM as Azure OpenAI
     participant DB as PostgreSQL
 
     V->>FE: Accesses artwork detail page
-    par Historical context request
+    par Historical context read
         FE->>BE: GET /artworks/{artwork_id}/historical-context
         BE->>DB: Checks historical_context
         DB-->>BE: Not found
-    and Comparative analysis request
+        BE-->>FE: 200, historical_context = null
+    and Comparative analysis read
         FE->>BE: GET /artworks/{artwork_id}/comparative-analysis
         BE->>DB: Checks comparative_analysis
         DB-->>BE: Not found
-    and Alt Text request
-        FE->>BE: GET /artworks/{artwork_id}/alt-text
-        BE->>DB: Checks alt_text
-        DB-->>BE: Not found
+        BE-->>FE: 200, comparative_analysis = null
     end
-    FE-->>V: Displays combined loading state in the Insight Card (RF-001, RF-006), image renders without Alt Text until its own request settles
-    par Historical context
+    FE-->>V: Displays the Insight Card's combined loading state (RF-001, RF-006)
+    FE->>BE: GET proxy/object/{artwork_id} — the artwork's primaryimageurl
+    BE-->>FE: Artwork record
+    FE->>IMG: Downloads primaryimageurl at most 768px — once, shared by both blocks
+    IMG-->>FE: Image
+    par Historical context generation
+        FE->>BE: POST /artworks/{artwork_id}/historical-context {image}
+        BE->>DB: Checks historical_context again
         BE->>AI: generate_historical_context(image + metadata)
         AI->>LLM: Requests multimodal generation
         LLM-->>AI: historical context + sources (or empty)
         AI-->>BE: TextBlockResult
         BE->>DB: Upserts historical_context if non-empty
         BE-->>FE: Returns historical_context response, independently
-    and Comparative analysis
+    and Comparative analysis generation
+        FE->>BE: POST /artworks/{artwork_id}/comparative-analysis {image}
+        BE->>DB: Checks comparative_analysis again
         BE->>AI: generate_comparative_analysis(image + metadata)
         AI->>LLM: Requests multimodal generation
         LLM-->>AI: comparative analysis + sources (or empty)
         AI-->>BE: TextBlockResult
         BE->>DB: Upserts comparative_analysis if non-empty
         BE-->>FE: Returns comparative_analysis response, independently
-    and Alt Text
-        BE->>AI: generate_alt_text(image + metadata)
-        AI->>LLM: Requests multimodal generation
-        LLM-->>AI: visual description (or fallback)
-        AI-->>BE: AltTextResult
-        BE->>DB: Upserts alt_text if non-empty
-        BE-->>FE: Returns alt_text response, independently
     end
-    FE->>FE: Recombines the historical-context and comparative-analysis responses (doc 06, §5) — the backend never aggregates these
-    FE-->>V: Displays Insight Card (RF-001, RF-004) and applies Alt Text to the img tag (RF-012), independently of the Insight Card's state
+    FE->>FE: Recombines the two blocks (doc 06, §5) — the backend never aggregates these
+    FE-->>V: Displays the Insight Card (RF-001, RF-004)
 ```
 
-**Note:** the three `par` branches above represent three fully independent HTTP requests (doc 07, §4), each hitting its own backend request handler — they are drawn together only to show that the front-end fires them concurrently on the same visit. No shared backend state or synchronization point connects them; a slow or failed request never blocks or is blocked by the other two.
+**Note:** each `par` branch above is a fully independent HTTP request (doc 07, §4), hitting its own backend request handler — they are drawn together only to show that the front-end fires them concurrently on the same visit. No shared backend state or synchronization point connects them; a slow or failed request never blocks or is blocked by the other. The one thing the two `POST`s share is the image, downloaded once on the front-end (doc 06, §5). The backend checks the database again on each `POST`, so the check before generating stays on the backend (§9, Decision 4). The backend's existence check against the Harvard API, before generation, is omitted from the drawing (doc 06, §2).
+
+Alt Text, a third request in the original design, is deferred this cycle (doc 99, §2.2); its flow still assumes a server-side image download, recorded as a pending issue in doc 07 (§8).
 
 ---
 
@@ -241,14 +245,14 @@ sequenceDiagram
 
     V->>FE: Accesses artwork detail page
     par Historical context request
-        FE->>BE: GET /artworks/{artwork_id}/historical-context
+        FE->>BE: POST /artworks/{artwork_id}/historical-context {image} — after its GET returned null (§7.1)
         BE->>AI: generate_historical_context(image + metadata)
         AI->>LLM: Requests multimodal generation
         LLM-->>AI: Timeout / error
         AI-->>BE: Failure reported
         BE-->>FE: 504 GENERATION_TIMEOUT, or 200 with empty text
     and Comparative analysis request
-        FE->>BE: GET /artworks/{artwork_id}/comparative-analysis
+        FE->>BE: POST /artworks/{artwork_id}/comparative-analysis {image} — after its GET returned null (§7.1)
         BE->>AI: generate_comparative_analysis(image + metadata)
         AI->>LLM: Requests multimodal generation
         LLM-->>AI: Timeout / error
@@ -349,6 +353,7 @@ flowchart TB
 | Region | The same US East region for the backend and the database — the closest to Brazil, the Harvard API and Azure Brazil South |
 | Domain | The platforms' own HTTPS subdomains (`*.vercel.app`, `*.onrender.com`) for the first deployment. A custom domain is an open item: when chosen, it is recorded here and `FRONTEND_ORIGIN` / `NEXT_PUBLIC_API_URL` follow it |
 | Deploying branch | `main`, after `ai_expansion` is merged into it. Pushes to other branches produce Vercel preview deployments, which call the same backend and are refused by CORS — intended, as previews are not presented |
+| Artwork image for generation | Harvard's image server answers the deployed backend with `403` and an HTML page (observed on Render, 2026-10-30), as it does Azure OpenAI and Vercel's image optimizer, while browsers load it normally. The browser therefore downloads the image and sends it with each Insight Card `POST` (§7.1; doc 07, §4). The backend still calls the Harvard **API** itself, which is unaffected |
 | Secrets | Only in the platforms' variable stores (RNF-005): on Render, `HARVARD_API_KEY`, `DATABASE_URL`, the three `AZURE_OPENAI_*` variables and `FRONTEND_ORIGIN`; on Vercel, only the two public `NEXT_PUBLIC_*` values, which hold no secret |
 
 **Free-tier limits, accepted for the first deployment** (author decision, 2026-10-29):
@@ -374,10 +379,11 @@ flowchart TB
 | 1   | Replace the Flask proxy with a single new service (e.g. FastAPI), also absorbing the Harvard API proxy                                              | Avoids permanently maintaining two Python services; typing and support for asynchronous operations favor the AI pipeline, which involves potentially long external calls (RNF-002)                                                                                                                                                           |
 | 2   | PostgreSQL as an additional container in the existing `docker-compose.yml`, with no migration to the cloud — **for the development host (§8.1); superseded for the public deployment by Decision 7** | Keeps operational complexity compatible with an academic project developed individually, within a one-semester timeline                                                                                                                                                                                                                      |
 | 3   | Every call to Azure OpenAI and to the Harvard API happens exclusively on the backend                                                                | RNF-005 — no API key may be exposed to the client                                                                                                                                                                                                                                                                                            |
-| 4   | The "check before generating" logic (on-demand persistence) lives entirely in the backend, never in the front-end, and runs independently per block | RF-001, RF-004, RF-013 — the front-end must not decide whether content needs to be generated; it only requests and receives the result                                                                                                                                                                                                       |
+| 4   | The "check before generating" logic (on-demand persistence) lives entirely in the backend, never in the front-end, and runs independently per block | RF-001, RF-004, RF-013 — the front-end must not decide whether content needs to be generated; it only requests and receives the result. **Clarified 2026-10-30:** the front-end now sends an image only after a `GET` read `null` (§7.1), but whether generation happens is still decided by the backend, which checks the database again on every `POST` and returns a persisted block without generating (doc 06, §2) |
 | 5   | Firebase code and credentials are removed from the project as soon as the new authentication system is functional, with no transition period        | No Firebase data is preserved — there is no reason to keep legacy code or credentials beyond what is necessary for reference during initial development                                                                                                                                                                                      |
 | 6   | Soft delete via an `expired_at` timestamp column on `users` and `artwork_ai_content`, instead of physical `DELETE` statements                       | System-wide policy: no register is ever physically removed. Preserves audit history on `users` and avoids irrecoverably discarding AI-generated content on `artwork_ai_content`, which is costly to regenerate. Active registers have `expired_at IS NULL`; all reads of "current" data must filter on this condition (`05-database.md`, §6) |
 | 7   | Public deployment on managed platforms: the front-end on Vercel, the backend and PostgreSQL on Render, both redeploying from GitHub (§8.2)          | Author decision (2026-10-29, doc 99 Phase 7): no server to administer during the project's last weeks, HTTPS and deploy-on-push included, and the same Dockerfile and migrations as development. Starts at no cost (Render free instances, Vercel Hobby free for non-commercial use) with known limits (§8.2), upgraded when needed. A single VM remains the option for hosting several future projects together |
+| 8   | The front-end downloads the artwork's image from Harvard's image service (`nrs.harvard.edu` / `ids.lib.harvard.edu`) and sends it to the backend for generation (§7.1, §8.2) | Author decision (2026-10-30): the deployed backend is refused by that server. This is **not** a call to the Harvard API in the sense of doc 00 (§2, rule 3) and Decision 3: the image service is not the keyed data API (`api.harvardartmuseums.org`), needs no key, and the browser already loads these same images to display them. Every call to the Harvard API and to Azure OpenAI still happens on the backend only |
 
 ---
 
@@ -399,6 +405,7 @@ Risks identified during this design phase; formal treatment (probability, impact
 
 - **Harvard proxy rewrite**: replacing `proxy.py` (currently functional) with the new single service introduces a risk of regression in MVP functionality (grid, filters, detail page). Recommended mitigation: parity tests for the new proxy before discontinuing Flask.
 - **`network_mode: host`**: the current Docker Compose configuration couples the services to the host network, which limits future portability to managed or multi-host environments. Since 2026-10-29 this affects the development host only — the public deployment (§8.2) does not use `docker-compose.yml`.
+- **Client-supplied image** (2026-10-30): the backend cannot verify that the image sent with an Insight Card `POST` is the artwork's (Decision 8). A client could persist a block that does not describe the artwork, and each `POST` for a missing block costs an Azure OpenAI call. Accepted for this cycle by author decision, with the limits listed in doc 07 (§4); per-client rate limiting is a doc 99 Phase 8 candidate.
 - **Absence of CI/CD**: deployment is automated since Phase 7 (each platform redeploys on push, §8.2), but no automated test runs before a deployment; a commit that breaks the build or the tests still reaches the deploying branch unchecked.
 
 ---

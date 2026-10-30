@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Art Archive AI — Backend",
-    "description": "Executable version of the API contract in documentation/specs/07-api-contract.md. Every request carries tests asserting status code and body shape, so running the whole collection (Postman Runner or `newman run`) checks the contract end to end.\n\nThe source of truth stays doc 07 — when the contract changes, update doc 07 first, then this collection.\n\nNot covered here: `502 HARVARD_API_ERROR` on /artworks/*, which needs Harvard to fail and is covered by backend/tests/test_insight_card_endpoints.py instead.\n\nFrom Phase 4 on, the Insight Card requests on an uncached artwork trigger real generation: they can take up to 60s (RNF-002) and consume Azure OpenAI tokens.",
+    "description": "Executable version of the API contract in documentation/specs/07-api-contract.md. Every request carries tests asserting status code and body shape, so running the whole collection (Postman Runner or `newman run`) checks the contract end to end.\n\nThe source of truth stays doc 07 — when the contract changes, update doc 07 first, then this collection.\n\nNot covered here: `502 HARVARD_API_ERROR` on /artworks/*, which needs Harvard to fail and is covered by backend/tests/test_insight_card_endpoints.py instead.\n\nSince doc 07 v2.4 each Insight Card block has a GET that only reads (null when missing) and a POST that generates from an image the front-end sends. The collection never sends a real image, so it never triggers generation or consumes Azure OpenAI tokens: the POSTs here only check validation (400) and the existence check (404). Generation with a real image is covered by the front-end flow and, with a fake pipeline, by backend/tests/test_insight_card_endpoints.py.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -135,8 +135,11 @@
       "description": "One independent endpoint per block. The front-end fires both in parallel and recombines them (doc 06 §5). An empty text is a normal outcome, not an error.",
       "item": [
         {
-          "name": "Historical context",
-          "request": { "method": "GET", "url": "{{baseUrl}}/artworks/{{existingArtworkId}}/historical-context" },
+          "name": "Historical context — read",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/artworks/{{existingArtworkId}}/historical-context"
+          },
           "event": [
             {
               "listen": "test",
@@ -148,12 +151,13 @@
                   "    const body = pm.response.json();",
                   "    pm.expect(Object.keys(body).sort()).to.eql([\"artwork_id\", \"historical_context\", \"historical_context_sources\"]);",
                   "    pm.expect(body.artwork_id).to.eql(Number(pm.variables.get(\"existingArtworkId\")));",
-                  "    pm.expect(body.historical_context).to.be.a(\"string\");",
+                  "    pm.expect(body.historical_context === null || typeof body.historical_context === \"string\").to.be.true;",
                   "    pm.expect(body.historical_context_sources).to.be.an(\"array\");",
                   "});",
-                  "pm.test(\"no sources when the text is empty (doc 09 §7)\", () => {",
+                  "pm.test(\"null when missing, never empty when persisted (doc 07 §4)\", () => {",
                   "    const body = pm.response.json();",
-                  "    if (body.historical_context === \"\") pm.expect(body.historical_context_sources).to.be.empty;",
+                  "    if (body.historical_context === null) pm.expect(body.historical_context_sources).to.be.empty;",
+                  "    else pm.expect(body.historical_context).to.not.eql(\"\");",
                   "});"
                 ]
               }
@@ -161,8 +165,77 @@
           ]
         },
         {
-          "name": "Historical context — nonexistent artwork",
-          "request": { "method": "GET", "url": "{{baseUrl}}/artworks/{{missingArtworkId}}/historical-context" },
+          "name": "Historical context — read, non-integer id",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/artworks/abc/historical-context"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"envelope with VALIDATION_ERROR\", () => {",
+                  "    const error = pm.response.json().error;",
+                  "    pm.expect(error.code).to.eql(\"VALIDATION_ERROR\");",
+                  "    pm.expect(error.message).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Historical context — generate, invalid image",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"image\": \"https://nrs.harvard.edu/not-a-data-url\"}"
+            },
+            "url": "{{baseUrl}}/artworks/{{existingArtworkId}}/historical-context"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"envelope with VALIDATION_ERROR\", () => {",
+                  "    const error = pm.response.json().error;",
+                  "    pm.expect(error.code).to.eql(\"VALIDATION_ERROR\");",
+                  "    pm.expect(error.message).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Historical context — generate, nonexistent artwork",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"image\": \"data:image/jpeg;base64,/9j/4AAQ\"}"
+            },
+            "url": "{{baseUrl}}/artworks/{{missingArtworkId}}/historical-context"
+          },
           "event": [
             {
               "listen": "test",
@@ -181,26 +254,11 @@
           ]
         },
         {
-          "name": "Historical context — non-integer id",
-          "request": { "method": "GET", "url": "{{baseUrl}}/artworks/abc/historical-context" },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
-                  "pm.test(\"envelope with VALIDATION_ERROR\", () => {",
-                  "    pm.expect(pm.response.json().error.code).to.eql(\"VALIDATION_ERROR\");",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Comparative analysis",
-          "request": { "method": "GET", "url": "{{baseUrl}}/artworks/{{existingArtworkId}}/comparative-analysis" },
+          "name": "Comparative analysis — read",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/artworks/{{existingArtworkId}}/comparative-analysis"
+          },
           "event": [
             {
               "listen": "test",
@@ -212,12 +270,13 @@
                   "    const body = pm.response.json();",
                   "    pm.expect(Object.keys(body).sort()).to.eql([\"artwork_id\", \"comparative_analysis\", \"comparative_analysis_sources\"]);",
                   "    pm.expect(body.artwork_id).to.eql(Number(pm.variables.get(\"existingArtworkId\")));",
-                  "    pm.expect(body.comparative_analysis).to.be.a(\"string\");",
+                  "    pm.expect(body.comparative_analysis === null || typeof body.comparative_analysis === \"string\").to.be.true;",
                   "    pm.expect(body.comparative_analysis_sources).to.be.an(\"array\");",
                   "});",
-                  "pm.test(\"no sources when the text is empty (doc 09 §7)\", () => {",
+                  "pm.test(\"null when missing, never empty when persisted (doc 07 §4)\", () => {",
                   "    const body = pm.response.json();",
-                  "    if (body.comparative_analysis === \"\") pm.expect(body.comparative_analysis_sources).to.be.empty;",
+                  "    if (body.comparative_analysis === null) pm.expect(body.comparative_analysis_sources).to.be.empty;",
+                  "    else pm.expect(body.comparative_analysis).to.not.eql(\"\");",
                   "});"
                 ]
               }
@@ -225,26 +284,11 @@
           ]
         },
         {
-          "name": "Comparative analysis — nonexistent artwork",
-          "request": { "method": "GET", "url": "{{baseUrl}}/artworks/{{missingArtworkId}}/comparative-analysis" },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test(\"status 404\", () => pm.response.to.have.status(404));",
-                  "pm.test(\"envelope with ARTWORK_NOT_FOUND\", () => {",
-                  "    pm.expect(pm.response.json().error.code).to.eql(\"ARTWORK_NOT_FOUND\");",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Comparative analysis — non-integer id",
-          "request": { "method": "GET", "url": "{{baseUrl}}/artworks/abc/comparative-analysis" },
+          "name": "Comparative analysis — read, non-integer id",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/artworks/abc/comparative-analysis"
+          },
           "event": [
             {
               "listen": "test",
@@ -253,7 +297,75 @@
                 "exec": [
                   "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
                   "pm.test(\"envelope with VALIDATION_ERROR\", () => {",
-                  "    pm.expect(pm.response.json().error.code).to.eql(\"VALIDATION_ERROR\");",
+                  "    const error = pm.response.json().error;",
+                  "    pm.expect(error.code).to.eql(\"VALIDATION_ERROR\");",
+                  "    pm.expect(error.message).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Comparative analysis — generate, invalid image",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"image\": \"https://nrs.harvard.edu/not-a-data-url\"}"
+            },
+            "url": "{{baseUrl}}/artworks/{{existingArtworkId}}/comparative-analysis"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"envelope with VALIDATION_ERROR\", () => {",
+                  "    const error = pm.response.json().error;",
+                  "    pm.expect(error.code).to.eql(\"VALIDATION_ERROR\");",
+                  "    pm.expect(error.message).to.be.a(\"string\");",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Comparative analysis — generate, nonexistent artwork",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\"image\": \"data:image/jpeg;base64,/9j/4AAQ\"}"
+            },
+            "url": "{{baseUrl}}/artworks/{{missingArtworkId}}/comparative-analysis"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"envelope with ARTWORK_NOT_FOUND\", () => {",
+                  "    const error = pm.response.json().error;",
+                  "    pm.expect(error.code).to.eql(\"ARTWORK_NOT_FOUND\");",
+                  "    pm.expect(error.message).to.be.a(\"string\");",
                   "});"
                 ]
               }
@@ -284,7 +396,7 @@
         },
         {
           "name": "Wrong method",
-          "request": { "method": "POST", "url": "{{baseUrl}}/artworks/{{existingArtworkId}}/historical-context" },
+          "request": { "method": "PUT", "url": "{{baseUrl}}/artworks/{{existingArtworkId}}/historical-context" },
           "event": [
             {
               "listen": "test",
