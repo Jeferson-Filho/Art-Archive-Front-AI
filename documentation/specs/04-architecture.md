@@ -342,7 +342,7 @@ flowchart TB
 
 | Item | Decision |
 | ---- | -------- |
-| Front-end | Vercel, Hobby plan, project rooted at the repository root. Vercel builds Next.js itself; the root `Dockerfile` is not used |
+| Front-end | Vercel, Hobby plan, project rooted at the repository root. Vercel builds Next.js itself; the root `Dockerfile` is not used. A root `vercel.json` declares `"framework": "nextjs"` and no `services`, so Vercel treats the repository as a single Next.js project — without it, Vercel's import detects the Next.js app and the Python folder (`proxy/` on the old `main`, `backend/` after the merge) as a multi-service project. The backend is never deployed on Vercel |
 | Backend | Render web service (runtime Docker) with root directory `backend/`, built from `backend/Dockerfile`. Listens on the port Render provides in `PORT` (8000 when unset, as in development) |
 | Database | Render Postgres in the same region, reached by the backend through its internal URL. Render creates the database and its user at provisioning; that user owns the database and is not a superuser, which meets doc 99 (Phase 2) without an extra role, and `pgcrypto` — a trusted extension — is created by migration `0001` |
 | Migrations | `alembic upgrade head` run by the author from the development machine against the database's external URL, whenever a new migration exists. Render offers a pre-deploy command on paid instances only; once the backend is upgraded, the migration moves there |
