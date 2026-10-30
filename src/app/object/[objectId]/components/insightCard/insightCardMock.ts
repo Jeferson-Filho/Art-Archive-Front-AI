@@ -46,8 +46,7 @@ const CONTENT: Record<BlockName, BlockOutcome> = {
       "so terms are explained rather than assumed.\n\n" +
       "The block closes on the cultural influences visible in the work — the traditions, exchanges and ideas it " +
       "draws on — synthesized into fluent prose rather than repeating the raw metadata. This fourth paragraph also " +
-      "shows how several paragraphs read as continuous text under the single section title, not as a titled " +
-      "subsection.",
+      'shows how several paragraphs read as continuous text under the "Context Information" title.',
     sources: ["https://harvardartmuseums.org/collections", "https://www.metmuseum.org/toah/"]
   },
   "comparative-analysis": {
@@ -58,10 +57,9 @@ const CONTENT: Record<BlockName, BlockOutcome> = {
       "makes them comparable: a shared technique, the same movement, a related cultural context, or a thematic " +
       "parallel.\n\n" +
       "Comparisons are only made when the model is reasonably confident they are accurate. When it is not, this block " +
-      "comes back empty and the section shows the historical context alone, with no gap or placeholder where this " +
-      "text would have been.\n\n" +
-      "It follows the historical context directly, as further paragraphs of the same section, with its own sources " +
-      "listed beneath it.",
+      'comes back empty and this "Comparative Analysis" section is not shown at all, leaving the historical context ' +
+      "alone, with no gap or placeholder where this text would have been.\n\n" +
+      "It comes right after the historical context, in its own section, with its own sources listed beneath it.",
     sources: ["https://en.wikipedia.org/wiki/Art_history"]
   }
 };
