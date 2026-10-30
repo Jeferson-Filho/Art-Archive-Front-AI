@@ -13,6 +13,9 @@ export interface TextBlock {
   sources: string[];
 }
 
+/** A block with content, displayed as its own titled section (RF-005). */
+export type DisplayedBlock = { name: BlockName } & TextBlock;
+
 /** One block's request, once settled. */
 export type BlockOutcome =
   | ({ kind: "content" } & TextBlock)
@@ -24,7 +27,7 @@ export type BlockOutcome =
 export type InsightCardState =
   | { status: "loading" }
   // Only the non-empty blocks, historical context first (RF-005)
-  | { status: "displayed"; blocks: TextBlock[] }
+  | { status: "displayed"; blocks: DisplayedBlock[] }
   | { status: "error"; reason: "timeout" | "standard" };
 
 export type LoadBlock = (artworkId: string, block: BlockName) => Promise<BlockOutcome>;

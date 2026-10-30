@@ -1,4 +1,4 @@
-import { BlockOutcome, InsightCardState, TextBlock } from "./types";
+import { BlockName, BlockOutcome, DisplayedBlock, InsightCardState } from "./types";
 
 /**
  * Combines the two independent block responses into the card's single state —
@@ -10,8 +10,12 @@ import { BlockOutcome, InsightCardState, TextBlock } from "./types";
  * - neither has text, any other mix → standard error (RF-005 scenario 3, RF-007 scenario 2)
  */
 export function combineInsightCard(historical: BlockOutcome, comparative: BlockOutcome): InsightCardState {
-  const blocks: TextBlock[] = [historical, comparative].flatMap((outcome) =>
-    outcome.kind === "content" ? [{ text: outcome.text, sources: outcome.sources }] : []
+  const outcomes: [BlockName, BlockOutcome][] = [
+    ["historical-context", historical],
+    ["comparative-analysis", comparative]
+  ];
+  const blocks: DisplayedBlock[] = outcomes.flatMap(([name, outcome]) =>
+    outcome.kind === "content" ? [{ name, text: outcome.text, sources: outcome.sources }] : []
   );
 
   if (blocks.length > 0) return { status: "displayed", blocks };

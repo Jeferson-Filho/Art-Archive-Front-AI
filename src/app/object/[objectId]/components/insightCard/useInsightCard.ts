@@ -24,7 +24,8 @@ export function useInsightCard(artworkId: string): InsightCardState {
     setState({ status: "loading" });
 
     // A fresh loader per visit, so the image download is shared by this visit's two blocks only
-    const load: LoadBlock = INSIGHT_CARD_SOURCE === "mock" ? createMockLoader(mockScenarioFromUrl()) : createApiLoader();
+    const load: LoadBlock =
+      INSIGHT_CARD_SOURCE === "mock" ? createMockLoader(mockScenarioFromUrl()) : createApiLoader();
 
     // Both loaders resolve to an outcome and never reject, so this waits for
     // both to settle — the Promise.allSettled behaviour doc 06 (§5) requires.
