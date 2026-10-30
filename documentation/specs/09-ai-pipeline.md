@@ -1,7 +1,7 @@
 # AI Pipeline — Insight Card and Alt Text — Art Archive AI
 
-**Version:** 2.2
-**Date:** 2026-10-27
+**Version:** 2.3
+**Date:** 2026-10-30
 **Status:** In Review
 **Base Documents:** [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md), [06 — Persistence Flow](./06-persistence-flow.md)
 
@@ -16,6 +16,8 @@ This document details the internal workings of the **AI Pipeline Module** (doc 0
 > **Change Note (2026-07-26):** revised to align with doc 02.1 (RF-001 through RF-004, RF-009, RF-010) and doc 02.2 (RF-011, RF-013), which superseded the original `02-requirements.md` this pipeline was first designed against. The previous version modeled **one** LLM call producing all three fields together (former §8, Decision 4), matching a single-row, all-fields-`NOT NULL` schema. That is no longer correct: RF-001 requires the historical-context and comparative-analysis blocks to be checked and generated **independently**, and RF-013 requires Alt Text to be generated through its **own fully separate dedicated call**. This version splits the pipeline into **three independent generation functions**, each callable on its own, matching the independently-nullable columns introduced in doc 05 (§4). It also adds source-relevance handling (RF-010), which the previous version did not model.
 >
 > **Change Note (2026-07-26, v2.1):** §11 is corrected — `generate_historical_context()` and `generate_comparative_analysis()` are invoked by **two separate HTTP request handlers**, one per dedicated endpoint (doc 07, §4), not by a single persistence-layer handler that calls both via `asyncio.gather`. The two calls may still happen concurrently in practice, since the front-end fires both requests at essentially the same time on artwork visit (doc 04, §7.1), but neither backend handler waits on, or knows about, the other.
+>
+> **Change Note (2026-10-30, v2.3) — the image is received, not downloaded.** The deployed backend gets `403` from Harvard's image server (doc 07, Change Note v2.4), so the two Insight Card functions now receive the image itself — a base64 `data:` URL that the front-end downloaded and sent with the `POST` (doc 07, §4) — instead of an image URL to download (§3, §4). The request model validates it before the pipeline runs, so `ImageUnavailableError` no longer exists for these two functions (§10). The rest of the pipeline (§5–§9) is unchanged. `generate_alt_text()` is deferred and keeps its original contract until Alt Text is specified again (doc 07, §8).
 
 ---
 
@@ -50,13 +52,13 @@ The pipeline **does not fetch data from the Harvard API on its own** — the ent
 
 ```python
 async def generate_historical_context(
-    image_url: str,
+    image: str,  # base64 data: URL, validated by the request model (doc 07 §4) — since v2.3
     metadata: ArtworkMetadata,
     timeout: int,  # RNF-002: budget remaining within the shared 60s window
 ) -> TextBlockResult: ...
 
 async def generate_comparative_analysis(
-    image_url: str,
+    image: str,
     metadata: ArtworkMetadata,
     timeout: int,
 ) -> TextBlockResult: ...
@@ -85,6 +87,8 @@ class ArtworkMetadata:
 
 All three functions receive the same `image_url` and `metadata` — the artwork's data is fetched once by the persistence layer and passed to whichever of the three functions are actually invoked (RF-001).
 
+**Since v2.3**, the two Insight Card functions receive `image` instead of `image_url`: the image the front-end sent with that block's `POST` (doc 07, §4). The metadata still comes from Harvard through the persistence layer — only the image is client-supplied.
+
 ---
 
 ## 4. Step 1 — Image Accessibility Validation
@@ -96,6 +100,13 @@ Before any call to the LLM, each of the three functions independently verifies t
 - **Failure at this step** → the function raises `ImageUnavailableError`, stopping before incurring any LLM call cost.
 
 **Revision (2026-10-27, v2.2) — the image is downloaded, not just checked.** Azure OpenAI cannot fetch Harvard image URLs itself: passing the URL returned `400 "Failed to download image"` on Chat Completions and `403 StorageAccessDenied` on the Responses API (three-call test, 2026-10-27). Step 1 therefore downloads the image (resized by Harvard's image service to at most 768px, about 100 KB) and hands it to Step 3 as a base64 `data:` URL. The download replaces the `HEAD` check and plays the same role: an artwork without `primaryimageurl`, or a download that fails or does not return an image, raises `ImageUnavailableError` before any LLM cost.
+
+**Revision (2026-10-30, v2.3) — the image is received from the front-end.** Deployed, the backend's own download gets `403` and an HTML page from Harvard's image server (observed on Render), so the download moves to the browser, which Harvard serves normally. Step 1 is now split across two places, with the same guarantees:
+
+- **The front-end** downloads the image exactly as this step did — the artwork's `primaryimageurl` with `width=768&height=768`, at most 10s — and settles the block as empty without sending anything when there is no image or the download fails (doc 06, §5). This is the case `ImageUnavailableError` used to cover.
+- **The request model** of the `POST` (doc 07, §4) accepts only a base64 `data:` URL of a JPEG, PNG or WebP image whose signature bytes match its declared type, at most 1.5 MB decoded, before any database read or LLM cost. The 768px limit is not re-checked: an image that passes these checks is sent to the model as received.
+
+The two Insight Card functions therefore start at Step 2 with a usable image, and raise nothing at Step 1.
 
 ---
 
@@ -255,7 +266,7 @@ class AltTextResult:
 
 | Internal Exception           | Raised By                                                               | Mapping in doc 06                                                                                                                    | Mapping in doc 07 (API)                                                                                                                                 |
 | ---------------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ImageUnavailableError`      | Any of the three functions, Step 1                                      | That block's generation is treated as failed, independent of the other two blocks (doc 06 §2/§3/§4)                                  | `historical_context`/`comparative_analysis`: `200` with that field `""`. `alt_text`: `200` with the fallback message (RF-011 scenario 3). Never a `5xx` |
+| `ImageUnavailableError`      | `generate_alt_text` only, Step 1 (since v2.3, the Insight Card functions receive a validated image — an invalid one is `400 VALIDATION_ERROR` from the request model, and a missing one never reaches the backend; §4) | That block's generation is treated as failed, independent of the other two blocks (doc 06 §2/§3/§4)                                  | `historical_context`/`comparative_analysis`: `200` with that field `""`. `alt_text`: `200` with the fallback message (RF-011 scenario 3). Never a `5xx` |
 | `LLMTimeoutError`            | `generate_historical_context` / `generate_comparative_analysis`, Step 3 | That specific request times out; the Insight Card's combined timeout message (doc 06 §5) is only shown if **both** requests time out | `504 GENERATION_TIMEOUT` on that specific endpoint (doc 07 §4)                                                                                          |
 | `LLMTimeoutError`            | `generate_alt_text`, Step 3                                             | Treated as any other Alt Text generation failure (doc 06 §4) — Alt Text has no timeout-specific status                               | `200` with the fallback message — this endpoint never returns a `5xx` (doc 07 §4)                                                                       |
 | `LLMProviderError`           | Any of the three functions, Step 3                                      | That block's generation is treated as failed, independent of the other two                                                           | Same mapping as `ImageUnavailableError` above — `200` with empty field or fallback message, never a `5xx`                                               |
@@ -269,7 +280,7 @@ A failure in one function never raises an exception that propagates to, or cance
 
 ### 11.1 Historical Context and Comparative Analysis Requests (Both Missing)
 
-Details what happens when a visitor's page load fires the two Insight Card requests at essentially the same time and both blocks turn out to be missing for that artwork. **`P1` and `P2` are two separate request handlers, backing two separate endpoints (doc 07, §4)** — they are drawn on the same timeline only to show that they happen concurrently; neither knows about, waits on, or shares state with the other. Each returns directly to its own caller once its own block settles — there is no shared "wait for both" step on the backend (that recombination happens in the front-end, doc 06 §5).
+Details what happens when a visitor's page load fires the two Insight Card requests at essentially the same time and both blocks turn out to be missing for that artwork. Since v2.3 these are the two `POST`s, and the image arrives with each request already validated (§4), so the "Image Verification" step below is the request model's check, not a download. **`P1` and `P2` are two separate request handlers, backing two separate endpoints (doc 07, §4)** — they are drawn on the same timeline only to show that they happen concurrently; neither knows about, waits on, or shares state with the other. Each returns directly to its own caller once its own block settles — there is no shared "wait for both" step on the backend (that recombination happens in the front-end, doc 06 §5).
 
 ```mermaid
 sequenceDiagram

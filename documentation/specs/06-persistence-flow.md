@@ -1,7 +1,7 @@
 # Persistence Flow Diagram — Art Archive AI
 
-**Version:** 2.3
-**Date:** 2026-10-27
+**Version:** 2.4
+**Date:** 2026-10-30
 **Status:** In review
 **Base documents:** [02.1 — Insight Card](./requeriments/02.1-insight-card.md), [02.2 — Alt Text](./requeriments/02.2-alt-text.md), [02.5 — Non-Functional](./requeriments/02.5-non-functional.md), [04 — System Architecture](./04-architecture.md), [05 — Database](./05-database.md)
 
@@ -28,6 +28,8 @@ It also covers a scenario not detailed at the architecture level: **two simultan
 > **Change Note (2026-10-27, v2.2):** Sections 2 and 3 now model the artwork existence check that runs between "block missing" and generation: `404 ARTWORK_NOT_FOUND` when the artwork is absent from Harvard, `502 HARVARD_API_ERROR` when Harvard fails during the check. The `404` was specified in doc 07 (§4) but never drawn here — the pending issue doc 07 (§8) carried; the `502` is an author decision of the same date (doc 07, §6.1). Section 7's pseudocode and Section 9's edge cases are updated to match, and a new Section 11 records two pending issues found while implementing doc 99 Phase 3.
 >
 > **Change Note (2026-10-27, v2.3):** both Section 11 pending issues resolved by author decision. (1) Section 6's upsert targets the partial unique index introduced by doc 05 v2.2 (`ON CONFLICT (artwork_id) WHERE expired_at IS NULL`), so a retired row no longer blocks re-persistence; it also returns the written row's `id`, and a block's sources are inserted under it only when the write wins. (2) An unreadable database is treated as "block missing" — generation proceeds, nothing is persisted — in Sections 2, 3, 7 and 9, with bounded connection and query timeouts recorded in Section 8.
+>
+> **Change Note (2026-10-30, v2.4) — check and generation split across two requests.** The deployed backend cannot download artwork images from Harvard's image server (doc 07, Change Note v2.4), so the image now comes from the browser. Each Insight Card flow (Sections 2–3) is split in two: `GET` runs the check and returns `null` for a missing block; the front-end then downloads the artwork's image once and sends it with a `POST`, which checks the database again, confirms the artwork exists in Harvard and generates. The front-end aggregation (Section 5) gains these steps, and Sections 7–10 are updated to match. The check-before-generating rule (RF-001), the per-column upsert (Section 6) and the outcome mapping are unchanged. The Alt Text flow (Section 4) is deferred and not revised here — doc 07 (§8) records the pending issue.
 
 ---
 
@@ -43,14 +45,24 @@ flowchart TD
     HExists -- "Yes (RF-001)" --> HFromDB["Return persisted historical_context + its sources"]
     HFromDB --> HEndCached(["End — response within 500ms (RNF-001)"])
 
-    HExists -- "No, or database unreadable" --> HHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
+    HExists -- "No, or database unreadable" --> HNull["Return 200 with historical_context = null"]
+    HNull --> HEndNull(["End — the front-end sends the POST<br/>with the artwork's image (Section 5)"])
+
+    HPost(["Request received:<br/>POST /artworks/{artwork_id}/historical-context<br/>with the artwork's image"]) --> HValid{"Body and image valid?<br/>(doc 07 §4)"}
+    HValid -- "No" --> HInvalid["Return 400 VALIDATION_ERROR"]
+    HInvalid --> HEndInvalid(["End — nothing generated"])
+    HValid -- "Yes" --> HRecheck["Query artwork_ai_content.historical_context<br/>again"]
+    HRecheck --> HRechecked{"Persisted in the meantime?"}
+    HRechecked -- "Yes" --> HFromDBPost["Return 200 with the persisted block<br/>(the image is ignored)"]
+    HFromDBPost --> HEndCachedPost(["End"])
+    HRechecked -- "No, or database unreadable" --> HHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
     HHarvard --> HArtwork{"Artwork exists?"}
     HArtwork -- "No" --> HNotFound["Return 404 ARTWORK_NOT_FOUND"]
     HNotFound --> HEndNotFound(["End — nothing generated"])
     HArtwork -- "Harvard failed" --> HHarvardError["Return 502 HARVARD_API_ERROR"]
     HHarvardError --> HEndHarvardError(["End — nothing generated"])
 
-    HArtwork -- Yes --> HTrigger["Trigger generate_historical_context()<br/>(doc 09)"]
+    HArtwork -- Yes --> HTrigger["Trigger generate_historical_context()<br/>with the received image (doc 09)"]
     HTrigger --> HResult{"Result"}
 
     HResult -- "Non-empty text (within 60s)" --> HPersist["Upsert historical_context (Section 6)<br/>— skipped if the database was unreadable"]
@@ -73,6 +85,9 @@ flowchart TD
 | Query `artwork_ai_content.historical_context`      | First action taken upon receiving the request — no AI call occurs before this check                                                       | RF-001                                      |
 | `historical_context` already persisted?            | Checked independently of `comparative_analysis` — this request never looks at, or waits on, the other column                              | RF-001                                      |
 | Database unreadable                                | The check itself fails (connection refused or timed out, query error). Treated as "block missing": the flow continues to generation, and the upsert at the end is skipped — nothing is persisted. Keeps the Insight Card working through an outage, at the cost of an LLM call on every visit while it lasts (author decision, 2026-10-27; Section 11) | RNF-008                                     |
+| `GET` — block not persisted                        | Returns `200` with `historical_context: null`, without contacting Harvard or the LLM. The front-end then sends the `POST` with the artwork's image (Section 5). A database that cannot be read also yields `null` | RF-001, RNF-001                             |
+| `POST` — body and image valid?                     | Checked before anything else: a base64 `data:` URL of a JPEG, PNG or WebP image matching its declared type, at most 1.5 MB decoded. Otherwise `400 VALIDATION_ERROR`, nothing generated (doc 07, §4) | doc 07 §4                                   |
+| `POST` — query again                               | The block may have been persisted by a concurrent visitor between this visitor's `GET` and `POST`. If so it is returned as is and the image is ignored — RF-001 still holds at generation time | RF-001                                      |
 | Fetch the artwork from Harvard                     | Only reached when the column is missing, so a persisted block never pays for a Harvard round trip. Confirms the artwork exists and supplies the metadata the pipeline needs (doc 09, §3) | RF-001, RNF-001                             |
 | Artwork exists? — No                               | `404 ARTWORK_NOT_FOUND`, before any pipeline call. Harvard signals absence with HTTP `200` and `{"error": "Not found"}`, so it is read from the body (doc 07, §4) | doc 07 §4                                   |
 | Artwork exists? — Harvard failed                   | Harvard unreachable, timed out, or answered with an error: `502 HARVARD_API_ERROR`, nothing generated (author decision, 2026-10-27)      | doc 07 §6.1                                 |
@@ -96,14 +111,24 @@ flowchart TD
     CExists -- "Yes (RF-001)" --> CFromDB["Return persisted comparative_analysis + its sources"]
     CFromDB --> CEndCached(["End — response within 500ms (RNF-001)"])
 
-    CExists -- "No, or database unreadable" --> CHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
+    CExists -- "No, or database unreadable" --> CNull["Return 200 with comparative_analysis = null"]
+    CNull --> CEndNull(["End — the front-end sends the POST<br/>with the artwork's image (Section 5)"])
+
+    CPost(["Request received:<br/>POST /artworks/{artwork_id}/comparative-analysis<br/>with the artwork's image"]) --> CValid{"Body and image valid?<br/>(doc 07 §4)"}
+    CValid -- "No" --> CInvalid["Return 400 VALIDATION_ERROR"]
+    CInvalid --> CEndInvalid(["End — nothing generated"])
+    CValid -- "Yes" --> CRecheck["Query artwork_ai_content.comparative_analysis<br/>again"]
+    CRecheck --> CRechecked{"Persisted in the meantime?"}
+    CRechecked -- "Yes" --> CFromDBPost["Return 200 with the persisted block<br/>(the image is ignored)"]
+    CFromDBPost --> CEndCachedPost(["End"])
+    CRechecked -- "No, or database unreadable" --> CHarvard["Fetch the artwork from Harvard<br/>(existence check + metadata)"]
     CHarvard --> CArtwork{"Artwork exists?"}
     CArtwork -- "No" --> CNotFound["Return 404 ARTWORK_NOT_FOUND"]
     CNotFound --> CEndNotFound(["End — nothing generated"])
     CArtwork -- "Harvard failed" --> CHarvardError["Return 502 HARVARD_API_ERROR"]
     CHarvardError --> CEndHarvardError(["End — nothing generated"])
 
-    CArtwork -- Yes --> CTrigger["Trigger generate_comparative_analysis()<br/>(doc 09)"]
+    CArtwork -- Yes --> CTrigger["Trigger generate_comparative_analysis()<br/>with the received image (doc 09)"]
     CTrigger --> CResult{"Result"}
 
     CResult -- "Non-empty text (within 60s)" --> CPersist["Upsert comparative_analysis (Section 6)<br/>— skipped if the database was unreadable"]
@@ -126,6 +151,7 @@ Mirrors Section 2 in every respect, calling `generate_comparative_analysis()` in
 | Query `artwork_ai_content.comparative_analysis`    | First action taken upon receiving the request — no AI call occurs before this check                                                         | RF-001                                        |
 | `comparative_analysis` already persisted?          | Checked independently of `historical_context` — this request never looks at, or waits on, the other column                                  | RF-001                                        |
 | Database unreadable                                | Identical to Section 2.2: treated as "block missing", generation proceeds, nothing is persisted                                              | RNF-008                                       |
+| `GET` — not persisted / `POST` — validate, query again | Identical to Section 2.2: `GET` returns `comparative_analysis: null`; the `POST` validates the image (`400 VALIDATION_ERROR`), then reads the database again before anything is generated | RF-001, RNF-001, doc 07 §4                    |
 | Fetch the artwork from Harvard / Artwork exists?   | Identical to Section 2.2: `404 ARTWORK_NOT_FOUND` when absent, `502 HARVARD_API_ERROR` when Harvard fails, both before any pipeline call      | RF-001, doc 07 §4, §6.1                       |
 | Trigger `generate_comparative_analysis()`          | Only called if the column is missing and the artwork exists                                                                                 | RF-001, RF-003, RF-009                        |
 | Result: non-empty text                             | Happy path — content is persisted (Section 6) and returned as part of a `200`                                                               | RF-003 (scenario 1), RF-004                   |
@@ -171,7 +197,13 @@ Sections 2 and 3 are two fully independent backend flows, behind two fully indep
 
 ```mermaid
 flowchart TD
-    Fire(["Artwork Details page loads —<br/>front-end fires both requests in parallel:<br/>GET .../historical-context<br/>GET .../comparative-analysis"]) --> Wait["Insight Card: Loading state (RF-006) —<br/>shown until both responses settle"]
+    Fire(["Artwork Details page loads —<br/>front-end reads both blocks in parallel:<br/>GET .../historical-context<br/>GET .../comparative-analysis"]) --> PerBlock{"For each block,<br/>independently: did its<br/>GET return null?"}
+    PerBlock -- "No — persisted block,<br/>or the GET failed" --> Wait["Insight Card: Loading state (RF-006) —<br/>shown until both blocks settle"]
+    PerBlock -- "Yes" --> Image["Get the artwork's image —<br/>downloaded once, shared by both blocks"]
+    Image -- "No image, or the<br/>download failed" --> NoImage["That block settles as empty<br/>(no POST is sent)"]
+    NoImage --> Wait
+    Image -- "Image ready" --> Post["POST .../{block} with the image"]
+    Post --> Wait
 
     Wait --> BothSettled{"Have both responses<br/>been received?"}
     BothSettled -- "Not yet" --> Wait
@@ -191,7 +223,10 @@ flowchart TD
 
 | Node                                       | Description                                                                                                                                                                                         | Requirement                              |
 | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| Fire both requests in parallel             | The front-end triggers `GET .../historical-context` and `GET .../comparative-analysis` at the same time, on page load — neither waits for the other                                                 | RF-001                                   |
+| Read both blocks in parallel               | The front-end triggers `GET .../historical-context` and `GET .../comparative-analysis` at the same time, on page load — neither waits for the other                                                 | RF-001                                   |
+| `GET` returned `null`                      | Decided per block: a block whose `GET` returned content settles at once; only a block read as `null` goes on to the image and the `POST`. A `GET` that fails (network, `5xx`) settles that block as empty, with no `POST` | RF-001, RNF-001                          |
+| Get the artwork's image                    | Done at most once per visit, and shared by both blocks — the second block to need it awaits the same download. The front-end reads the artwork's `primaryimageurl` through the backend's Harvard proxy (`GET proxy/object/{artwork_id}`, doc 07 §3) and downloads that URL from Harvard's image service with `width=768&height=768`, so the image is at most 768px on its longest side (doc 09, §4). The download may take up to **10s**; the response must be an image. It is sent as a base64 `data:` URL. No image (no `primaryimageurl`, a failed or non-image download) settles the block as empty without a `POST` — the same outcome the backend gave before v2.4 | doc 07 §4, doc 04 §9 Decision 8          |
+| `POST` with the image                      | Each block sends its own `POST`; neither waits for the other's. The response is reduced exactly as before v2.4: content, empty (`200` with `""`, or any non-timeout failure), or timeout (`504`, or the client's own limit) | RF-001, RF-007                           |
 | Loading state                              | Shown from the moment both requests are fired until both have a settled response (success, empty, or timeout) — never transitions on just one                                                       | RF-006                                   |
 | Both responses received?                   | The front-end waits for both promises to settle (e.g. `Promise.allSettled`) before making any display decision                                                                                      | RF-001, RF-006                           |
 | At least one non-empty?                    | If either block has text, the Insight Card moves to Displayed, rendering only the non-empty block(s) — the other is simply omitted, no error shown                                                  | RF-001, RF-005 (scenario 2)              |
@@ -239,15 +274,27 @@ The same pattern applies independently to `comparative_analysis` and `alt_text`,
 
 ## 7. Verification Logic Pseudocode
 
-Each function below backs exactly one HTTP request handler (doc 07, §4) — there is no shared function that resolves more than one block. In particular, the `asyncio.gather`-based aggregation from the previous revision is removed: there is no longer a single request handler that waits on both text blocks, since Section 5's aggregation now happens in front-end code, not here.
+Each function below backs exactly one HTTP request handler (doc 07, §4) — there is no shared function that resolves more than one block. Since v2.4 each Insight Card block has two: one for its `GET` (read) and one for its `POST` (generate). In particular, the `asyncio.gather`-based aggregation from the previous revision is removed: there is no longer a single request handler that waits on both text blocks, since Section 5's aggregation now happens in front-end code, not here.
 
 ```python
-async def get_or_generate_historical_context(artwork_id: int) -> TextBlockResponse:
+async def read_historical_context(artwork_id: int) -> TextBlockResponse | None:
+    """GET — the check alone. None is the `null` of doc 07 §4: the front-end then POSTs."""
     try:
         row = await db.get_active_artwork_ai_content(artwork_id)  # WHERE expired_at IS NULL
-        database_readable = True
     except DatabaseUnavailableError:  # connection refused/timed out, query failed — see Section 11
-        row, database_readable = None, False  # treated as "block missing"
+        return None  # treated as "block missing"
+    if row and row.historical_context is not None:
+        return TextBlockResponse.from_db(row.historical_context, sources=row.historical_context_sources)
+    return None
+
+
+async def generate_historical_context(artwork_id: int, image: str) -> TextBlockResponse:
+    """POST — `image` was validated by the request model before this runs (doc 07 §4)."""
+    try:
+        row = await db.get_active_artwork_ai_content(artwork_id)  # checked again: a concurrent visitor may have won
+        database_readable = True
+    except DatabaseUnavailableError:
+        row, database_readable = None, False
     if row and row.historical_context is not None:
         return TextBlockResponse.from_db(row.historical_context, sources=row.historical_context_sources)
 
@@ -256,11 +303,11 @@ async def get_or_generate_historical_context(artwork_id: int) -> TextBlockRespon
         raise ArtworkNotFoundError()  # → 404 ARTWORK_NOT_FOUND, before any pipeline call (doc 07 §4)
     try:
         result = await ai_pipeline.generate_historical_context(
-            artwork.primary_image_url, artwork.metadata, timeout=GENERATION_TIMEOUT_SECONDS  # RNF-002: 60s
+            image, artwork.metadata, timeout=GENERATION_TIMEOUT_SECONDS  # RNF-002: 60s
         )
     except TimeoutError:
         raise HistoricalContextTimeoutError()  # → 504 GENERATION_TIMEOUT (doc 07)
-    except (ImageUnavailableError, LLMProviderError, LLMIncompleteResponseError):
+    except (LLMProviderError, LLMIncompleteResponseError):
         return TextBlockResponse.empty()  # treated identically to insufficient information, RF-007 scenario 1
 
     if result.text == "":
@@ -271,10 +318,9 @@ async def get_or_generate_historical_context(artwork_id: int) -> TextBlockRespon
     return TextBlockResponse.generated(result.text, result.sources)
 
 
-async def get_or_generate_comparative_analysis(artwork_id: int) -> TextBlockResponse:
-    # mirrors get_or_generate_historical_context(), calling generate_comparative_analysis()
-    # and raising ComparativeAnalysisTimeoutError() instead
-    ...
+# read_comparative_analysis() / generate_comparative_analysis() mirror the two
+# functions above, calling ai_pipeline.generate_comparative_analysis() and
+# raising ComparativeAnalysisTimeoutError() instead
 
 
 async def get_or_generate_alt_text(artwork_id: int) -> str:
@@ -301,7 +347,8 @@ async def get_or_generate_alt_text(artwork_id: int) -> str:
 
 | Flow stage                                                                                   | Time budget                                                                                                                                             | Requirement     |
 | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| Initial query + return of an already-persisted block                                         | Up to 500ms, measured **per block independently**                                                                                                       | RNF-001         |
+| Initial query + return of an already-persisted block (the `GET`)                             | Up to 500ms, measured **per block independently**. The `GET` never waits on Harvard, the image or the LLM                                             | RNF-001         |
+| Front-end image download, before a block's `POST`                                            | Up to 10s, once per visit, client-side. Not part of RNF-002's window, which starts when the `POST` reaches the backend and generation is triggered     | RNF-002         |
 | A single triggered `generate_*()` call, from trigger to that block's own result              | Up to 60s                                                                                                                                               | RNF-002         |
 | The two Insight Card requests, when the front-end fires them together and both must generate | Bounded by the two concurrent 60s calls running in parallel (Sections 2–3) — not their sum, since the front-end waits on both independently (Section 5) | RNF-002         |
 | Insight Card combined error state reaching the timeout-specific message                      | Only reached if **both** underlying requests independently return `504 GENERATION_TIMEOUT` (Section 5)                                                  | RNF-002, RF-007 |
@@ -319,14 +366,16 @@ RNF-002 frames historical context, comparative analysis, and Alt Text as sharing
 | Scenario                                                                 | Handling in the flow                                                                                                                                                                                                          | Reference                                |
 | ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
 | Incomplete artwork metadata (no date or technique)                       | Absorbed inside the AI Pipeline before this flow begins — generation proceeds normally with the available data, for whichever block(s) are triggered, without an error path                                                   | RF-002 (scenario 2), RF-011 (scenario 2) |
-| Artwork image inaccessible (invalid URL)                                 | Each of the (up to three) independent calls fails on its own Step 1 image check (doc 09, §4) — results in that specific block staying empty/unpersisted, or the Alt Text fallback message, without affecting the other blocks | RF-011 (scenario 3)                      |
+| Artwork image inaccessible (no `primaryimageurl`, or its download fails) | Detected by the front-end before any `POST` (Section 5): the Insight Card blocks that needed generation settle as empty, with no request sent and nothing persisted — retried on the next visit. Alt Text is deferred (doc 07, §8) | RF-007, RF-011 (scenario 3)              |
+| Image sent with the `POST` is invalid                                    | `400 VALIDATION_ERROR` before any database read or generation (Sections 2–3). Front-end-side it counts as a response without content that is not a timeout | doc 07 §4                                |
+| Image sent with the `POST` is not the artwork's                          | Not detectable: the backend cannot download the artwork's image to compare. The first writer persists a block that may not describe the artwork. Accepted risk (doc 07, §4): retired through `expired_at`, then regenerated on the next visit | doc 07 §4                                |
 | Two simultaneous requests for an artwork, both missing the same block    | Handled via the per-column, first-writer-wins upsert (Section 6)                                                                                                                                                              | Design decision of this document         |
 | Two simultaneous requests for an artwork, missing _different_ blocks     | No conflict — each request's upsert only ever touches its own column                                                                                                                                                          | Design decision of this document         |
 | Write failure to the database after successful generation for a block    | That block's content is delivered to the user without being persisted; error logged; that block alone is retried on the artwork's next visit — the other blocks are unaffected                                                | RF-004 (scenario 2), RNF-003             |
 | One Insight Card request times out (504), the other returns successfully | The front-end (Section 5) sees one 504 and one 200-with-content; since at least one response has content, the successful block is shown — no error is displayed anywhere (RF-007, scenario 1)                                 | RF-007, RNF-002                          |
 | Both Insight Card requests time out (504)                                | The front-end (Section 5) sees two 504s — timeout-specific error message (RF-007, scenario 3); the artwork's title, image, and metadata remain visible and functional                                                         | RF-006, RF-007, RNF-002                  |
 | Both Insight Card requests come back with no content, but not both 504   | Standard "was not possible to generate" message (RF-007, scenario 2), decided front-end-side (Section 5) — same message as the "both genuinely empty" case (RF-005, scenario 3)                                               | RF-005, RF-007                           |
-| `artwork_id` does not exist in the Harvard API                           | `404 ARTWORK_NOT_FOUND` from the existence check (Sections 2–3), before any pipeline call. Never reached for an artwork whose block is already persisted                                                                     | doc 07 §4                                |
+| `artwork_id` does not exist in the Harvard API                           | The `GET` reads `null` (it does not consult Harvard); in practice the front-end finds no image to send (Section 5). A `POST` sent anyway gets `404 ARTWORK_NOT_FOUND` from the existence check (Sections 2–3), before any pipeline call. Never reached for an artwork whose block is already persisted | doc 07 §4                                |
 | Database unreadable during the initial check                             | Treated as "block missing": generation proceeds and its content is returned normally, but the upsert is skipped, so nothing is persisted — the next visit generates again, until the database is back. Front-end-side nothing distinguishes this from a first visit | RNF-008, Section 11                      |
 | Harvard fails during the existence check                                 | `502 HARVARD_API_ERROR`, nothing generated or persisted. Front-end-side (Section 5) it counts as a response without content that is not a timeout                                                                             | doc 07 §6.1                              |
 
