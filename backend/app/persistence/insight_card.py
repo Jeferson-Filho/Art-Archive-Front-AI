@@ -1,9 +1,11 @@
 """
 On-Demand Persistence module — Insight Card blocks (doc 04 §4; doc 06 §2, §3, §7).
 
-One public function per block, each backing exactly one request handler
-(doc 06, §7). The two blocks are checked, generated and persisted
-independently: neither function reads or waits on the other's column (RF-001).
+Two public functions per block, each backing exactly one request handler
+(doc 06 v2.4, §7): `read_*` for the GET, which only reads, and `generate_*`
+for the POST, which generates from the image the front-end sent. The two
+blocks are checked, generated and persisted independently: no function
+reads or waits on the other block's column (RF-001).
 """
 
 import logging
@@ -20,13 +22,7 @@ from app.core.config import get_settings
 from app.db.models import ArtworkAIContent, ArtworkContentSource
 from app.integrations import harvard
 from app.pipeline import generation
-from app.pipeline.generation import (
-    ArtworkMetadata,
-    ImageUnavailableError,
-    LLMIncompleteResponseError,
-    LLMProviderError,
-    TextBlockResult,
-)
+from app.pipeline.generation import ArtworkMetadata, LLMIncompleteResponseError, LLMProviderError, TextBlockResult
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +37,7 @@ DATABASE_UNAVAILABLE = (SQLAlchemyError, OSError, asyncpg.PostgresError, asyncpg
 # Failures that come back as an empty block rather than an error: the same
 # outcome as "the model had nothing reliable to say" (doc 09, §10). A timeout
 # (LLMTimeoutError) is the exception, and propagates as a 504.
-GENERATION_FAILED = (ImageUnavailableError, LLMProviderError, LLMIncompleteResponseError)
+GENERATION_FAILED = (LLMProviderError, LLMIncompleteResponseError)
 
 GENERATORS: dict[str, Callable[..., Awaitable[TextBlockResult]]] = {
     "historical_context": generation.generate_historical_context,
@@ -59,19 +55,40 @@ class TextBlock:
     sources: list[str] = field(default_factory=list)
 
 
-async def get_or_generate_historical_context(session: AsyncSession, artwork_id: int) -> TextBlock:
-    """RF-001, RF-002 — doc 06 §2."""
-    return await _get_or_generate(session, artwork_id, "historical_context")
+async def read_historical_context(session: AsyncSession, artwork_id: int) -> TextBlock | None:
+    """RF-001, RNF-001 — doc 06 §2, the GET. None when the block is missing."""
+    return await _read(session, artwork_id, "historical_context")
 
 
-async def get_or_generate_comparative_analysis(session: AsyncSession, artwork_id: int) -> TextBlock:
-    """RF-001, RF-003 — doc 06 §3."""
-    return await _get_or_generate(session, artwork_id, "comparative_analysis")
+async def read_comparative_analysis(session: AsyncSession, artwork_id: int) -> TextBlock | None:
+    """RF-001, RNF-001 — doc 06 §3, the GET. None when the block is missing."""
+    return await _read(session, artwork_id, "comparative_analysis")
 
 
-async def _get_or_generate(session: AsyncSession, artwork_id: int, block: BlockType) -> TextBlock:
-    # Check before generating (RF-001). The database is always consulted first,
-    # so an already-persisted block never reaches Harvard or the LLM (RNF-001).
+async def generate_historical_context(session: AsyncSession, artwork_id: int, image: str) -> TextBlock:
+    """RF-001, RF-002 — doc 06 §2, the POST. `image` is the validated data URL."""
+    return await _generate(session, artwork_id, "historical_context", image)
+
+
+async def generate_comparative_analysis(session: AsyncSession, artwork_id: int, image: str) -> TextBlock:
+    """RF-001, RF-003 — doc 06 §3, the POST. `image` is the validated data URL."""
+    return await _generate(session, artwork_id, "comparative_analysis", image)
+
+
+async def _read(session: AsyncSession, artwork_id: int, block: BlockType) -> TextBlock | None:
+    # Never reaches Harvard or the LLM, so it stays within RNF-001's 500ms
+    try:
+        return await _read_persisted_block(session, artwork_id, block)
+    except DATABASE_UNAVAILABLE as exc:
+        # Read as missing (doc 06, §2): the front-end then sends the POST, which
+        # generates without persisting while the outage lasts
+        logger.warning("Database unreadable for artwork %s, block read as missing: %s", artwork_id, type(exc).__name__)
+        return None
+
+
+async def _generate(session: AsyncSession, artwork_id: int, block: BlockType, image: str) -> TextBlock:
+    # Check before generating (RF-001), again: a concurrent visitor may have
+    # persisted the block since this visitor's GET. If so, the image is ignored.
     try:
         persisted = await _read_persisted_block(session, artwork_id, block)
         database_readable = True
@@ -93,7 +110,7 @@ async def _get_or_generate(session: AsyncSession, artwork_id: int, block: BlockT
 
     try:
         result = await GENERATORS[block](
-            artwork.get("primaryimageurl"),
+            image,  # client-supplied: an accepted risk (doc 07, §4)
             _metadata_from_record(artwork),
             timeout=get_settings().generation_timeout_seconds,  # RNF-002
         )

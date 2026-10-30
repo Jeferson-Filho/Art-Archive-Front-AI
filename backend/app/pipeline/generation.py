@@ -2,16 +2,15 @@
 AI Pipeline module — the two Insight Card blocks (doc 09).
 
 `generate_historical_context()` and `generate_comparative_analysis()` are
-independent entry points (RF-001), each running the same four steps:
-download the image (§4), assemble the prompt (§5), call Azure OpenAI (§6),
-validate the response structurally (§7). Neither fetches anything from
-Harvard: the persistence layer hands over the image URL and metadata (§2).
+independent entry points (RF-001), each running the same steps: assemble
+the prompt (§5), call Azure OpenAI (§6), validate the response structurally
+(§7). Neither fetches anything from Harvard: the persistence layer hands
+over the metadata, and the image arrives from the front-end, already
+validated by the request model (doc 09 v2.3, §4; doc 07, §4).
 """
 
-import base64
 import json
 import logging
-import time
 from dataclasses import dataclass, field
 from types import ModuleType
 
@@ -23,15 +22,7 @@ from app.prompts.historical_context import v1 as historical_context_prompt
 
 logger = logging.getLogger(__name__)
 
-# Harvard's image service resizes on request; 768px keeps the image at about
-# 100 KB and ~500 input tokens while staying legible to the model (doc 09, §4)
-IMAGE_MAX_SIDE_PX = 768
-IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 10.0
 TEMPERATURE = 0.35  # doc 11, §5
-
-
-class ImageUnavailableError(Exception):
-    """Step 1 — the artwork has no image, or it could not be downloaded."""
 
 
 class LLMTimeoutError(Exception):
@@ -78,50 +69,19 @@ class TextBlockResult:
         )
 
 
-async def generate_historical_context(
-    image_url: str | None, metadata: ArtworkMetadata, timeout: float
-) -> TextBlockResult:
-    """RF-002 — doc 09, with the prompt of doc 11.1."""
-    return await _generate(historical_context_prompt, image_url, metadata, timeout)
+async def generate_historical_context(image: str, metadata: ArtworkMetadata, timeout: float) -> TextBlockResult:
+    """RF-002 — doc 09, with the prompt of doc 11.1. `image` is a base64 data URL."""
+    return await _generate(historical_context_prompt, image, metadata, timeout)
 
 
-async def generate_comparative_analysis(
-    image_url: str | None, metadata: ArtworkMetadata, timeout: float
-) -> TextBlockResult:
-    """RF-003 — doc 09, with the prompt of doc 11.2."""
-    return await _generate(comparative_analysis_prompt, image_url, metadata, timeout)
+async def generate_comparative_analysis(image: str, metadata: ArtworkMetadata, timeout: float) -> TextBlockResult:
+    """RF-003 — doc 09, with the prompt of doc 11.2. `image` is a base64 data URL."""
+    return await _generate(comparative_analysis_prompt, image, metadata, timeout)
 
 
-async def _generate(
-    prompt: ModuleType, image_url: str | None, metadata: ArtworkMetadata, timeout: float
-) -> TextBlockResult:
-    started = time.monotonic()
-    image = await _download_image(image_url)
-
-    # The LLM call gets what is left of the budget once the image is in (doc 09, §6)
-    remaining = timeout - (time.monotonic() - started)
-    if remaining <= 0:
-        raise LLMTimeoutError("budget spent downloading the image")
-
-    response = await _call_llm(prompt, image, metadata, remaining)
+async def _generate(prompt: ModuleType, image: str, metadata: ArtworkMetadata, timeout: float) -> TextBlockResult:
+    response = await _call_llm(prompt, image, metadata, timeout)
     return _parse(response, prompt.PROMPT_VERSION)
-
-
-async def _download_image(image_url: str | None) -> str:
-    """Step 1 (doc 09, §4): Azure cannot fetch Harvard image URLs itself, so
-    the image is downloaded here and sent inline as a base64 data URL."""
-    if not image_url:
-        raise ImageUnavailableError("artwork has no primary image")
-    try:
-        async with httpx.AsyncClient(timeout=IMAGE_DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as client:
-            response = await client.get(image_url, params={"height": IMAGE_MAX_SIDE_PX, "width": IMAGE_MAX_SIDE_PX})
-    except httpx.HTTPError as exc:
-        raise ImageUnavailableError(type(exc).__name__) from None
-
-    content_type = response.headers.get("content-type", "").split(";")[0].strip()
-    if response.status_code != 200 or not content_type.startswith("image/"):
-        raise ImageUnavailableError(f"HTTP {response.status_code}, {content_type or 'no content type'}")
-    return f"data:{content_type};base64,{base64.b64encode(response.content).decode()}"
 
 
 async def _call_llm(prompt: ModuleType, image: str, metadata: ArtworkMetadata, timeout: float) -> dict:
